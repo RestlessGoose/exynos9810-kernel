@@ -898,17 +898,17 @@ exit:
 }
 
 #ifdef CONFIG_MPTCP
-#define TCP_DEFERRED_ALL ((1UL << TCP_TSQ_DEFERRED) |		\
-			  (1UL << TCP_WRITE_TIMER_DEFERRED) |	\
-			  (1UL << TCP_DELACK_TIMER_DEFERRED) |	\
-			  (1UL << TCP_MTU_REDUCED_DEFERRED) |   \
-			  (1UL << MPTCP_PATH_MANAGER_DEFERRED) |\
-			  (1UL << MPTCP_SUB_DEFERRED))
+#define TCP_DEFERRED_ALL (TCP_TSQ_DEFERRED |		\
+			  TCP_WRITE_TIMER_DEFERRED |	\
+			  TCP_DELACK_TIMER_DEFERRED |	\
+			  TCP_MTU_REDUCED_DEFERRED |    \
+			  MPTCP_PATH_MANAGER_DEFERRED | \
+			  MPTCP_SUB_DEFERRED)
 #else
-#define TCP_DEFERRED_ALL ((1UL << TCP_TSQ_DEFERRED) |		\
-			  (1UL << TCP_WRITE_TIMER_DEFERRED) |	\
-			  (1UL << TCP_DELACK_TIMER_DEFERRED) |	\
-			  (1UL << TCP_MTU_REDUCED_DEFERRED))
+#define TCP_DEFERRED_ALL (TCPF_TSQ_DEFERRED |		\
+			  TCPF_WRITE_TIMER_DEFERRED |	\
+			  TCPF_DELACK_TIMER_DEFERRED |	\
+			  TCPF_MTU_REDUCED_DEFERRED)
 #endif
 /**
  * tcp_release_cb - tcp release_sock() callback
@@ -930,7 +930,7 @@ void tcp_release_cb(struct sock *sk)
 		nflags = flags & ~TCP_DEFERRED_ALL;
 	} while (cmpxchg(&tp->tsq_flags, flags, nflags) != flags);
 
-	if (flags & (1UL << TCP_TSQ_DEFERRED))
+	if (flags & TCPF_TSQ_DEFERRED)
 		tcp_tsq_handler(sk);
 
 	/* Here begins the tricky part :
@@ -944,15 +944,15 @@ void tcp_release_cb(struct sock *sk)
 	 */
 	sock_release_ownership(sk);
 
-	if (flags & (1UL << TCP_WRITE_TIMER_DEFERRED)) {
+	if (flags & TCPF_WRITE_TIMER_DEFERRED) {
 		tcp_write_timer_handler(sk);
 		__sock_put(sk);
 	}
-	if (flags & (1UL << TCP_DELACK_TIMER_DEFERRED)) {
+	if (flags & TCPF_DELACK_TIMER_DEFERRED) {
 		tcp_delack_timer_handler(sk);
 		__sock_put(sk);
 	}
-	if (flags & (1UL << TCP_MTU_REDUCED_DEFERRED)) {
+	if (flags & TCPF_MTU_REDUCED_DEFERRED) {
 		inet_csk(sk)->icsk_af_ops->mtu_reduced(sk);
 		__sock_put(sk);
 	}

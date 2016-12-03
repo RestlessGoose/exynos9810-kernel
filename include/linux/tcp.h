@@ -501,7 +501,7 @@ struct tcp_sock {
 #endif /* CONFIG_MPTCP */
 };
 
-enum tsq_flags {
+enum tsq_enum {
 	TSQ_THROTTLED,
 	TSQ_QUEUED,
 	TCP_TSQ_DEFERRED,	   /* tcp_tasklet_func() found socket was owned */
@@ -514,6 +514,15 @@ enum tsq_flags {
 	MPTCP_PATH_MANAGER_DEFERRED, /* MPTCP deferred creation of new subflows */
 	MPTCP_SUB_DEFERRED, /* A subflow got deferred - process them */
 #endif
+};
+
+enum tsq_flags {
+	TSQF_THROTTLED			= (1UL << TSQ_THROTTLED),
+	TSQF_QUEUED			= (1UL << TSQ_QUEUED),
+	TCPF_TSQ_DEFERRED		= (1UL << TCP_TSQ_DEFERRED),
+	TCPF_WRITE_TIMER_DEFERRED	= (1UL << TCP_WRITE_TIMER_DEFERRED),
+	TCPF_DELACK_TIMER_DEFERRED	= (1UL << TCP_DELACK_TIMER_DEFERRED),
+	TCPF_MTU_REDUCED_DEFERRED	= (1UL << TCP_MTU_REDUCED_DEFERRED),
 };
 
 static inline struct tcp_sock *tcp_sk(const struct sock *sk)
