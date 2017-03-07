@@ -2526,6 +2526,8 @@ SYSCALL_DEFINE1(unshare, unsigned long, unshare_flags)
 		}
 	}
 
+	perf_event_namespaces(current);
+
 bad_unshare_cleanup_cred:
 	if (new_cred)
 		put_cred(new_cred);
