@@ -28,6 +28,7 @@
 #endif
 #include <net/tcp.h>
 #include <net/sock_reuseport.h>
+#include <net/addrconf.h>
 
 #ifdef INET_CSK_DEBUG
 const char inet_csk_timer_bug_msg[] = "inet_csk BUG: unknown timer value\n";
