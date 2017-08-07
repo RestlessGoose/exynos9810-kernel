@@ -887,7 +887,7 @@ static struct sock *__udp6_lib_demux_lookup(struct net *net,
 					    const struct in6_addr *loc_addr,
 					    __be16 rmt_port,
 					    const struct in6_addr *rmt_addr,
-					    int dif)
+					    int dif, int sdif)
 {
 	unsigned short hnum = ntohs(loc_port);
 	unsigned int hash2 = udp6_portaddr_hash(net, loc_addr, hnum);
@@ -898,7 +898,7 @@ static struct sock *__udp6_lib_demux_lookup(struct net *net,
 	struct sock *sk;
 
 	udp_portaddr_for_each_entry_rcu(sk, &hslot2->head) {
-		if (INET6_MATCH(sk, net, rmt_addr, loc_addr, ports, dif))
+		if (INET6_MATCH(sk, net, rmt_addr, loc_addr, ports, dif, sdif))
 			return sk;
 		/* Only check first socket in chain */
 		break;
@@ -913,6 +913,7 @@ static void udp_v6_early_demux(struct sk_buff *skb)
 	struct sock *sk;
 	struct dst_entry *dst;
 	int dif = skb->dev->ifindex;
+	int sdif = inet6_sdif(skb);
 
 	if (!pskb_may_pull(skb, skb_transport_offset(skb) +
 	    sizeof(struct udphdr)))
@@ -924,7 +925,7 @@ static void udp_v6_early_demux(struct sk_buff *skb)
 		sk = __udp6_lib_demux_lookup(net, uh->dest,
 					     &ipv6_hdr(skb)->daddr,
 					     uh->source, &ipv6_hdr(skb)->saddr,
-					     dif);
+					     dif, sdif);
 	else
 		return;
 
