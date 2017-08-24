@@ -2524,7 +2524,6 @@ static int __bpf_tx_xdp(struct net_device *dev,
 	int err;
 
 	if (!dev->netdev_ops->ndo_xdp_xmit) {
-		bpf_warn_invalid_xdp_redirect(dev->ifindex);
 		return -EOPNOTSUPP;
 	}
 
@@ -2594,7 +2593,6 @@ int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp,
 	fwd = dev_get_by_index_rcu(dev_net(dev), index);
 	ri->ifindex = 0;
 	if (unlikely(!fwd)) {
-		bpf_warn_invalid_xdp_redirect(index);
 		err = -EINVAL;
 		goto out;
 	}
@@ -2615,7 +2613,6 @@ int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb)
 	dev = dev_get_by_index_rcu(dev_net(dev), index);
 	ri->ifindex = 0;
 	if (unlikely(!dev)) {
-		bpf_warn_invalid_xdp_redirect(index);
 		return -EINVAL;
 	}
 
@@ -3752,12 +3749,6 @@ void bpf_warn_invalid_xdp_action(u32 act)
 	WARN_ONCE(1, "Illegal XDP return value %u, expect packet loss\n", act);
 }
 EXPORT_SYMBOL_GPL(bpf_warn_invalid_xdp_action);
-
-void bpf_warn_invalid_xdp_redirect(u32 ifindex)
-{
-	WARN_ONCE(1, "Illegal XDP redirect to unsupported device ifindex(%i)\n", ifindex);
-}
-EXPORT_SYMBOL_GPL(bpf_warn_invalid_xdp_redirect);
 
 static bool sock_addr_is_valid_access(int off, int size,
 				      enum bpf_access_type type,
