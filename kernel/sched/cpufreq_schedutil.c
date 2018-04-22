@@ -34,6 +34,7 @@ struct sugov_tunables {
 	struct gov_attr_set attr_set;
 	unsigned int up_rate_limit_us;
 	unsigned int down_rate_limit_us;
+	unsigned int power_limit;
 };
 
 struct sugov_policy {
@@ -208,6 +209,33 @@ static inline unsigned int freqvar_tipping_point(int cpu, unsigned int freq)
 }
 #endif
 
+unsigned long __cpu_norm_util(unsigned long util, unsigned long capacity);
+
+static unsigned long sugov_find_cap_power_limit(struct sugov_policy *sg_policy, unsigned long max_cap)
+{
+	struct sched_domain *sd;
+	struct sched_group *sg;
+	unsigned int total_power = 0;
+	unsigned int power_limit = sg_policy->tunables->power_limit << SCHED_CAPACITY_SHIFT;
+	unsigned int j, idx;
+	
+	sd = rcu_dereference_check_sched_domain(cpu_rq(cpumask_first(sg_policy->policy->related_cpus))->sd);
+	sg = sd->groups;
+	
+	for (idx = sg->sge->nr_cap_states - 1; idx >= 0; idx--) {
+		total_power = 0;
+		for_each_cpu_and(j, sg_policy->policy->related_cpus, cpu_online_mask) {
+			total_power += sg->sge->cap_states[idx].power * 
+					__cpu_norm_util(cpu_rq(j)->cfs.avg.util_avg, max_cap);
+		}
+		
+		if (total_power < power_limit)
+			return sg->sge->cap_states[idx].cap;
+	}
+		
+	return max_cap;
+}
+
 /**
  * get_next_freq - Compute a new frequency for a given cpufreq policy.
  * @sg_policy: schedutil policy object to compute the new frequency for.
@@ -236,8 +264,13 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 	struct cpufreq_policy *policy = sg_policy->policy;
 	unsigned int freq = arch_scale_freq_invariant() ?
 				policy->max : policy->cur;
+				
+	unsigned int cap_util = sugov_find_cap_power_limit(sg_policy, max);
 
-	freq = freqvar_tipping_point(policy->cpu, freq) * util / max;
+	if (cap_util > util)
+		freq = freqvar_tipping_point(policy->cpu, freq) * util / max;
+	else 
+		freq = freq * cap_util / max;
 
 	if (freq == sg_policy->cached_raw_freq && sg_policy->next_freq != UINT_MAX)
 		return sg_policy->next_freq;
@@ -576,12 +609,35 @@ static ssize_t down_rate_limit_us_store(struct gov_attr_set *attr_set,
 	return count;
 }
 
+static ssize_t power_limit_show(struct gov_attr_set *attr_set, char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	
+	return sprintf(buf, "%u\n", tunables->power_limit);
+}
+
+static ssize_t power_limit_store(struct gov_attr_set *attr_set,
+					const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	unsigned int power_limit;
+
+	if (kstrtouint(buf, 10, &power_limit))
+		return -EINVAL;
+
+	tunables->power_limit = power_limit;
+
+	return count;
+}
+
 static struct governor_attr up_rate_limit_us = __ATTR_RW(up_rate_limit_us);
 static struct governor_attr down_rate_limit_us = __ATTR_RW(down_rate_limit_us);
+static struct governor_attr power_limit = __ATTR_RW(power_limit);
 
 static struct attribute *sugov_attributes[] = {
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
+	&power_limit.attr,
 	NULL
 };
 
@@ -695,6 +751,8 @@ static int sugov_init(struct cpufreq_policy *policy)
                         tunables->down_rate_limit_us *= lat;
                 }
 	}
+	
+	tunables->power_limit = 3500;
 
 	policy->governor_data = sg_policy;
 	sg_policy->tunables = tunables;
