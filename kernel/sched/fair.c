@@ -8751,7 +8751,7 @@ static void update_blocked_averages(int cpu)
 		if (se && !skip_blocked_update(se))
 			update_load_avg(se, 0);
 	}
-
+	update_rt_rq_load_avg(rq_clock_task(rq), cpu, &rq->rt, 0);
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 
@@ -8811,6 +8811,7 @@ static inline void update_blocked_averages(int cpu)
 	raw_spin_lock_irqsave(&rq->lock, flags);
 	update_rq_clock(rq);
 	update_cfs_rq_load_avg(cfs_rq_clock_task(cfs_rq), cfs_rq, true);
+	update_rt_rq_load_avg(rq_clock_task(rq), cpu, &rq->rt, 0);
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 
