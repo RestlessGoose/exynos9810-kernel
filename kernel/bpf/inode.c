@@ -526,7 +526,7 @@ struct bpf_prog *bpf_prog_get_type_path(const char *name, enum bpf_prog_type typ
 }
 EXPORT_SYMBOL(bpf_prog_get_type_path);
 
-static void bpf_evict_inode(struct inode *inode)
+static void bpf_free_inode(struct inode *inode)
 {
 	enum bpf_type type;
 
@@ -535,12 +535,14 @@ static void bpf_evict_inode(struct inode *inode)
 
 	if (!bpf_inode_type(inode, &type))
 		bpf_any_put(inode->i_private, type);
+	free_inode_nonrcu(inode);
 }
 
 static const struct super_operations bpf_super_ops = {
 	.statfs		= simple_statfs,
 	.drop_inode	= generic_delete_inode,
-	.evict_inode	= bpf_evict_inode,
+	.show_options	= generic_show_options,
+	.free_inode	= bpf_free_inode,
 };
 
 static int bpf_fill_super(struct super_block *sb, void *data, int silent)
