@@ -408,3 +408,4 @@
 391	common	copy_file_range		sys_copy_file_range
 392	common	preadv2			sys_preadv2
 393	common	pwritev2		sys_pwritev2
+436	common	close_range		sys_close_range
