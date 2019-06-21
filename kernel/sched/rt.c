@@ -3717,6 +3717,9 @@ const struct sched_class rt_sched_class = {
 #endif
 #ifdef CONFIG_RT_GROUP_SCHED
 	.task_change_group	= task_change_group_rt,
+
+#ifdef CONFIG_UCLAMP_TASK
+	.uclamp_enabled		= 1,
 #endif
 };
 
