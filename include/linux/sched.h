@@ -1630,6 +1630,32 @@ struct sched_dl_entity {
 	struct hrtimer dl_timer;
 };
 
+#ifdef CONFIG_UCLAMP_TASK
+/* Number of utilization clamp buckets (shorter alias) */
+#define UCLAMP_BUCKETS CONFIG_UCLAMP_BUCKETS_COUNT
+
+/*
+ * Utilization clamp for a scheduling entity
+ * @value:		clamp value "assigned" to a se
+ * @bucket_id:		bucket index corresponding to the "assigned" value
+ * @active:		the se is currently refcounted in a rq's bucket
+ *
+ * The bucket_id is the index of the clamp bucket matching the clamp value
+ * which is pre-computed and stored to avoid expensive integer divisions from
+ * the fast path.
+ *
+ * The active bit is set whenever a task has got an "effective" value assigned,
+ * which can be different from the clamp value "requested" from user-space.
+ * This allows to know a task is refcounted in the rq's bucket corresponding
+ * to the "effective" bucket_id.
+ */
+struct uclamp_se {
+	unsigned int value		: bits_per(SCHED_CAPACITY_SCALE);
+	unsigned int bucket_id		: bits_per(UCLAMP_BUCKETS);
+	unsigned int active		: 1;
+};
+#endif /* CONFIG_UCLAMP_TASK */
+
 union rcu_special {
 	struct {
 		u8 blocked;
@@ -1725,6 +1751,13 @@ struct task_struct {
 	struct task_group *sched_task_group;
 #endif
 	struct sched_dl_entity dl;
+
+#ifdef CONFIG_UCLAMP_TASK
+	/* Clamp values requested for a scheduling entity */
+	struct uclamp_se		uclamp_req[UCLAMP_CNT];
+	/* Effective clamp values used for a scheduling entity */
+	struct uclamp_se		uclamp[UCLAMP_CNT];
+#endif
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	/* list of struct preempt_notifier: */
