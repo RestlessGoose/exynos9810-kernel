@@ -224,11 +224,6 @@ int bpf_jit_harden   __read_mostly;
 long bpf_jit_limit   __read_mostly;
 long bpf_jit_limit_max __read_mostly;
 
-<<<<<<< HEAD
-pure_initcall(bpf_jit_charge_init);
-
-=======
->>>>>>> f7dc16b9038f (bpf: Prevent increasing bpf_jit_limit above max)
 static atomic_long_t bpf_jit_current;
 
 /* Can be overridden by an arch's JIT compiler if it has a custom,
@@ -279,24 +274,6 @@ bool __weak arch_bpf_jit_check_func(const struct bpf_prog *prog)
 }
 EXPORT_SYMBOL(arch_bpf_jit_check_func);
 #endif
-
-void *__weak bpf_jit_alloc_exec(unsigned long size)
-{
-#ifdef CONFIG_MODULES
-	return module_alloc(size);
-#else
-	return vmalloc_exec(size);
-#endif
-}
-
-void __weak bpf_jit_free_exec(void *addr)
-{
-#ifdef CONFIG_MODULES
-	module_memfree(addr);
-#else
-	vfree(addr);
-#endif
-}
 
 struct bpf_binary_header *
 bpf_jit_binary_alloc(unsigned int proglen, u8 **image_ptr,
