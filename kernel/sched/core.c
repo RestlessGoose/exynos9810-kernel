@@ -75,7 +75,6 @@
 #include <linux/compiler.h>
 #include <linux/frame.h>
 #include <linux/prefetch.h>
-#include <linux/exynos-ss.h>
 #include <linux/cpufreq_times.h>
 #include <linux/sched/loadavg.h>
 #include <linux/cgroup-defs.h>
@@ -87,8 +86,6 @@
 #ifdef CONFIG_PARAVIRT
 #include <asm/paravirt.h>
 #endif
-
-#include <linux/sec_debug.h>
 
 #include "sched.h"
 #include "../workqueue_internal.h"
@@ -514,7 +511,8 @@ void resched_cpu(int cpu)
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&rq->lock, flags);
-	resched_curr(rq);
+	if (cpu_online(cpu) || cpu == smp_processor_id())
+		resched_curr(rq);
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 
@@ -1543,24 +1541,17 @@ static int select_fallback_rq(int cpu, struct task_struct *p)
 	const struct cpumask *nodemask = NULL;
 	enum { cpuset, possible, fail } state = cpuset;
 	int dest_cpu;
-	struct cpumask target_mask;
 
 	/*
 	 * If the node that the cpu is on has been offlined, cpu_to_node()
 	 * will return -1. There is no cpu on the node, and we should
 	 * select the cpu on the other node.
 	 */
-	cpumask_and(&target_mask, cpu_active_mask, cpu_coregroup_mask(cpu));
-	if (cpumask_empty(&target_mask))
-		cpumask_setall(&target_mask);
-	else if (!cpumask_intersects(&target_mask, tsk_cpus_allowed(p)))
-		cpumask_copy(&target_mask, tsk_cpus_allowed(p));
-
 	if (nid != -1) {
 		nodemask = cpumask_of_node(nid);
 
 		/* Look for allowed, online CPU in same node. */
-		for_each_cpu_and(dest_cpu, nodemask, &target_mask) {
+		for_each_cpu(dest_cpu, nodemask) {
 			if (!cpu_active(dest_cpu))
 				continue;
 			if (cpumask_test_cpu(dest_cpu, tsk_cpus_allowed(p)))
@@ -1570,7 +1561,7 @@ static int select_fallback_rq(int cpu, struct task_struct *p)
 
 	for (;;) {
 		/* Any allowed, online CPU? */
-		for_each_cpu_and(dest_cpu, tsk_cpus_allowed(p), &target_mask) {
+		for_each_cpu(dest_cpu, tsk_cpus_allowed(p)) {
 			if (!(p->flags & PF_KTHREAD) && !cpu_active(dest_cpu))
 				continue;
 			if (!cpu_online(dest_cpu))
@@ -1589,16 +1580,10 @@ static int select_fallback_rq(int cpu, struct task_struct *p)
 			/* fall-through */
 		case possible:
 			do_set_cpus_allowed(p, cpu_possible_mask);
-
 			state = fail;
 			break;
 
 		case fail:
-			pr_warn("cpu %d, task %s, active_mask %x, target_mask %x\n", cpu,
-				p->comm, *(unsigned int *)cpumask_bits(cpu_active_mask),
-				*(unsigned int *)cpumask_bits(&target_mask));
-			dest_cpu = 0;
-			goto out;
 			BUG();
 			break;
 		}
@@ -1903,9 +1888,6 @@ out:
 
 bool cpus_share_cache(int this_cpu, int that_cpu)
 {
-	if (this_cpu == that_cpu)
-		return true;
-
 	return per_cpu(sd_llc_id, this_cpu) == per_cpu(sd_llc_id, that_cpu);
 }
 #endif /* CONFIG_SMP */
@@ -2235,6 +2217,7 @@ void __dl_clear_params(struct task_struct *p)
 	dl_se->dl_period = 0;
 	dl_se->flags = 0;
 	dl_se->dl_bw = 0;
+	dl_se->dl_density = 0;
 
 	dl_se->dl_throttled = 0;
 	dl_se->dl_yielded = 0;
@@ -2349,7 +2332,7 @@ int sysctl_numa_balancing(struct ctl_table *table, int write,
 DEFINE_STATIC_KEY_FALSE(sched_schedstats);
 static bool __initdata __sched_schedstats = false;
 
-void set_schedstats(bool enabled)
+static void set_schedstats(bool enabled)
 {
 	if (enabled)
 		static_branch_enable(&sched_schedstats);
@@ -2473,7 +2456,6 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	}
 
 	init_entity_runnable_average(&p->se);
-	init_rt_entity_runnable_average(&p->rt);
 
 	/*
 	 * The child is not yet in the pid-hash so no cgroup attach races,
@@ -2941,7 +2923,7 @@ context_switch(struct rq *rq, struct task_struct *prev,
 
 	if (!mm) {
 		next->active_mm = oldmm;
-		mmgrab(oldmm);
+		atomic_inc(&oldmm->mm_count);
 		enter_lazy_tlb(oldmm, next);
 	} else
 		switch_mm_irqs_off(oldmm, mm, next);
@@ -3312,7 +3294,7 @@ static noinline void __schedule_bug(struct task_struct *prev)
 	if (oops_in_progress)
 		return;
 
-	pr_auto(ASL6, "BUG: scheduling while atomic: %s/%d/0x%08x\n",
+	printk(KERN_ERR "BUG: scheduling while atomic: %s/%d/0x%08x\n",
 		prev->comm, prev->pid, preempt_count());
 
 	debug_show_held_locks(prev);
@@ -3329,9 +3311,6 @@ static noinline void __schedule_bug(struct task_struct *prev)
 		panic("scheduling while atomic\n");
 
 	dump_stack();
-#ifdef CONFIG_DEBUG_ATOMIC_SLEEP_PANIC
-	BUG();
-#endif
 	add_taint(TAINT_WARN, LOCKDEP_STILL_OK);
 }
 
@@ -3517,7 +3496,6 @@ static void __sched notrace __schedule(bool preempt)
 		raw_spin_unlock_irq(&rq->lock);
 	}
 
-	exynos_ss_task(smp_processor_id(), rq->curr);
 	balance_callback(rq);
 }
 
@@ -3809,8 +3787,7 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	if (dl_prio(prio)) {
 		struct task_struct *pi_task = rt_mutex_get_top_task(p);
 		if (!dl_prio(p->normal_prio) ||
-		    (pi_task && dl_prio(pi_task->prio) &&
-		     dl_entity_preempt(&pi_task->dl, &p->dl))) {
+		    (pi_task && dl_entity_preempt(&pi_task->dl, &p->dl))) {
 			p->dl.dl_boosted = 1;
 			queue_flag |= ENQUEUE_REPLENISH;
 		} else
@@ -4028,6 +4005,7 @@ __setparam_dl(struct task_struct *p, const struct sched_attr *attr)
 	dl_se->dl_period = attr->sched_period ?: dl_se->dl_deadline;
 	dl_se->flags = attr->sched_flags;
 	dl_se->dl_bw = to_ratio(dl_se->dl_period, dl_se->dl_runtime);
+	dl_se->dl_density = to_ratio(dl_se->dl_deadline, dl_se->dl_runtime);
 
 	/*
 	 * Changing the parameters of a task is 'tricky' and we're not doing
@@ -5991,6 +5969,19 @@ static void rq_attach_root(struct rq *rq, struct root_domain *rd)
 		call_rcu_sched(&old_rd->rcu, free_rootdomain);
 }
 
+void sched_get_rd(struct root_domain *rd)
+{
+	atomic_inc(&rd->refcount);
+}
+
+void sched_put_rd(struct root_domain *rd)
+{
+	if (!atomic_dec_and_test(&rd->refcount))
+		return;
+
+	call_rcu_sched(&rd->rcu, free_rootdomain);
+}
+
 static int init_rootdomain(struct root_domain *rd)
 {
 	memset(rd, 0, sizeof(*rd));
@@ -6218,9 +6209,6 @@ cpu_attach_domain(struct sched_domain *sd, struct root_domain *rd, int cpu)
 	rq_attach_root(rq, rd);
 	tmp = rq->sd;
 	rcu_assign_pointer(rq->sd, sd);
-#if defined(CONFIG_SCHED_DEBUG)
-	dirty_sched_domain_sysctl(cpu);
-#endif
 	destroy_sched_domains(tmp);
 
 	update_top_cache_domain(cpu);
@@ -7530,7 +7518,7 @@ void cpuset_cpu_active(void)
 	cpuset_update_active_cpus(true);
 }
 
-int cpuset_cpu_inactive(unsigned int cpu)
+static int cpuset_cpu_inactive(unsigned int cpu)
 {
 	unsigned long flags;
 	struct dl_bw *dl_b;
@@ -7921,7 +7909,7 @@ void __init sched_init(void)
 	/*
 	 * The boot idle thread does lazy MMU switching as well:
 	 */
-	mmgrab(&init_mm);
+	atomic_inc(&init_mm.mm_count);
 	enter_lazy_tlb(&init_mm, current);
 
 	/*
@@ -8004,7 +7992,7 @@ void ___might_sleep(const char *file, int line, int preempt_offset)
 	/* Save this before calling printk(), since that will clobber it */
 	preempt_disable_ip = get_preempt_disable_ip(current);
 
-	pr_auto(ASL6,
+	printk(KERN_ERR
 		"BUG: sleeping function called from invalid context at %s:%d\n",
 			file, line);
 	printk(KERN_ERR
@@ -8025,9 +8013,6 @@ void ___might_sleep(const char *file, int line, int preempt_offset)
 		pr_cont("\n");
 	}
 	dump_stack();
-#ifdef CONFIG_DEBUG_ATOMIC_SLEEP_PANIC
-	BUG();
-#endif
 	add_taint(TAINT_WARN, LOCKDEP_STILL_OK);
 }
 EXPORT_SYMBOL(___might_sleep);
@@ -8211,7 +8196,7 @@ static void sched_change_group(struct task_struct *tsk, int type)
 	tg = autogroup_task_group(tsk, tg);
 	tsk->sched_task_group = tg;
 
-#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED)
+#ifdef CONFIG_FAIR_GROUP_SCHED
 	if (tsk->sched_class->task_change_group)
 		tsk->sched_class->task_change_group(tsk, type);
 	else
@@ -8620,9 +8605,8 @@ int sched_rr_handler(struct ctl_table *table, int write,
 	/* make sure that internally we keep jiffies */
 	/* also, writing zero resets timeslice to default */
 	if (!ret && write) {
-		sched_rr_timeslice =
-			sysctl_sched_rr_timeslice <= 0 ? RR_TIMESLICE :
-			msecs_to_jiffies(sysctl_sched_rr_timeslice);
+		sched_rr_timeslice = sched_rr_timeslice <= 0 ?
+			RR_TIMESLICE : msecs_to_jiffies(sched_rr_timeslice);
 	}
 	mutex_unlock(&mutex);
 	return ret;
@@ -9138,21 +9122,4 @@ const u32 sched_prio_to_wmult[40] = {
  /*   5 */  12820798,  15790321,  19976592,  24970740,  31350126,
  /*  10 */  39045157,  49367440,  61356676,  76695844,  95443717,
  /*  15 */ 119304647, 148102320, 186737708, 238609294, 286331153,
-};
-
-/*
- * RT Extension for 'prio_to_weight'
- */
-const int rtprio_to_weight[51] = {
- /* 0 */     17222521, 15500269, 13950242, 12555218, 11299696,
- /* 10 */    10169726,  9152754,  8237478,  7413730,  6672357,
- /* 20 */     6005122,  5404609,  4864149,  4377734,  3939960,
- /* 30 */     3545964,  3191368,  2872231,  2585008,  2326507,
- /* 40 */     2093856,  1884471,  1696024,  1526421,  1373779,
- /* 50 */     1236401,  1112761,  1001485,   901337,   811203,
- /* 60 */      730083,   657074,   591367,   532230,   479007,
- /* 70 */      431106,   387996,   349196,   314277,   282849,
- /* 80 */      254564,   229108,   206197,   185577,   167019,
- /* 90 */      150318,   135286,   121757,   109581,    98623,
- /* 100 for Fair class */				88761,
 };

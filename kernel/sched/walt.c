@@ -148,6 +148,7 @@ static int __init walt_init_ops(void)
 }
 late_initcall(walt_init_ops);
 
+#ifdef CONFIG_CFS_BANDWIDTH
 void walt_inc_cfs_cumulative_runnable_avg(struct cfs_rq *cfs_rq,
 		struct task_struct *p)
 {
@@ -159,6 +160,7 @@ void walt_dec_cfs_cumulative_runnable_avg(struct cfs_rq *cfs_rq,
 {
 	cfs_rq->cumulative_runnable_avg -= p->ravg.demand;
 }
+#endif
 
 static int exiting_task(struct task_struct *p)
 {
@@ -618,7 +620,8 @@ static void update_history(struct rq *rq, struct task_struct *p,
 	 */
 	if (!task_has_dl_policy(p) || !p->dl.dl_throttled) {
 		if (task_on_rq_queued(p))
-			fixup_cumulative_runnable_avg(rq, p, demand);
+			p->sched_class->fixup_cumulative_runnable_avg(rq, p,
+								      demand);
 		else if (rq->curr == p)
 			fixup_cum_window_demand(rq, demand);
 	}
@@ -795,11 +798,11 @@ void walt_set_window_start(struct rq *rq)
 	int cpu = cpu_of(rq);
 	struct rq *sync_rq = cpu_rq(sync_cpu);
 
-	if (rq->window_start)
+	if (likely(rq->window_start))
 		return;
 
 	if (cpu == sync_cpu) {
-		rq->window_start = walt_ktime_clock();
+		rq->window_start = 1;
 	} else {
 		raw_spin_unlock(&rq->lock);
 		double_rq_lock(rq, sync_rq);

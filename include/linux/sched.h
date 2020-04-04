@@ -2,7 +2,6 @@
 #define _LINUX_SCHED_H
 
 #include <uapi/linux/sched.h>
-#include <linux/mm_event.h>
 
 #include <linux/sched/prio.h>
 
@@ -52,6 +51,7 @@ struct sched_param {
 #include <linux/timer.h>
 #include <linux/hrtimer.h>
 #include <linux/kcov.h>
+#include <linux/sched/types.h>
 #include <linux/task_io_accounting.h>
 #include <linux/latencytop.h>
 #include <linux/cred.h>
@@ -59,6 +59,7 @@ struct sched_param {
 #include <linux/uidgid.h>
 #include <linux/gfp.h>
 #include <linux/magic.h>
+#include <linux/cgroup-defs.h>
 
 #include <asm/processor.h>
 
@@ -139,31 +140,6 @@ struct nameidata;
 #define VMACACHE_SIZE (1U << VMACACHE_BITS)
 #define VMACACHE_MASK (VMACACHE_SIZE - 1)
 
-/*
- * These are the constant used to fake the fixed-point load-average
- * counting. Some notes:
- *  - 11 bit fractions expand to 22 bits by the multiplies: this gives
- *    a load-average precision of 10 bits integer + 11 bits fractional
- *  - if you want to count load-averages more often, you need more
- *    precision, or rounding will get you. With 2-second counting freq,
- *    the EXP_n values would be 1981, 2034 and 2043 if still using only
- *    11 bit fractions.
- */
-extern unsigned long avenrun[];		/* Load averages */
-extern void get_avenrun(unsigned long *loads, unsigned long offset, int shift);
-
-#define FSHIFT		11		/* nr of bits of precision */
-#define FIXED_1		(1<<FSHIFT)	/* 1.0 as fixed-point */
-#define LOAD_FREQ	(5*HZ+1)	/* 5 sec intervals */
-#define EXP_1		1884		/* 1/exp(5sec/1min) as fixed-point */
-#define EXP_5		2014		/* 1/exp(5sec/5min) */
-#define EXP_15		2037		/* 1/exp(5sec/15min) */
-
-#define CALC_LOAD(load,exp,n) \
-	load *= exp; \
-	load += n*(FIXED_1-exp); \
-	load >>= FSHIFT;
-
 extern unsigned long total_forks;
 extern int nr_threads;
 DECLARE_PER_CPU(unsigned long, process_counts);
@@ -173,16 +149,9 @@ extern bool single_task_running(void);
 extern unsigned long nr_iowait(void);
 extern unsigned long nr_iowait_cpu(int cpu);
 extern void get_iowait_load(unsigned long *nr_waiters, unsigned long *load);
-#ifdef CONFIG_SCHED_HMP
-extern int register_hmp_task_migration_notifier(struct notifier_block *nb);
-#define HMP_UP_MIGRATION       0
-#define HMP_DOWN_MIGRATION     1
-#endif
 #ifdef CONFIG_CPU_QUIET
 extern u64 nr_running_integral(unsigned int cpu);
 #endif
-
-extern void calc_global_load(unsigned long ticks);
 
 #if defined(CONFIG_SMP) && defined(CONFIG_NO_HZ_COMMON)
 extern void cpu_load_update_nohz_start(void);
@@ -395,7 +364,6 @@ extern int sched_cpu_starting(unsigned int cpu);
 extern int sched_cpu_activate(unsigned int cpu);
 extern int sched_cpu_deactivate(unsigned int cpu);
 extern void cpuset_cpu_active(void);
-extern int cpuset_cpu_inactive(unsigned int cpu);
 
 #ifdef CONFIG_HOTPLUG_CPU
 extern int sched_cpu_dying(unsigned int cpu);
@@ -546,7 +514,6 @@ static inline int get_dumpable(struct mm_struct *mm)
 #define MMF_OOM_SKIP		21	/* mm is of no interest for the OOM killer */
 #define MMF_UNSTABLE		22	/* mm is unstable for copy_from_user */
 #define MMF_HUGE_ZERO_PAGE	23      /* mm has ever used the global huge zero page */
-#define MMF_OOM_VICTIM		25      /* mm is the oom victim */
 #define MMF_OOM_REAP_QUEUED	26	/* mm was queued for oom_reaper */
 
 #define MMF_INIT_MASK		(MMF_DUMPABLE_MASK | MMF_DUMP_FILTER_MASK)
@@ -598,17 +565,8 @@ static inline void prev_cputime_init(struct prev_cputime *prev)
 #endif
 }
 
-/**
- * struct task_cputime - collected CPU time counts
- * @utime:		time spent in user mode, in &cputime_t units
- * @stime:		time spent in kernel mode, in &cputime_t units
- * @sum_exec_runtime:	total time spent on the CPU, in nanoseconds
- *
- * This structure groups together three kinds of CPU time that are tracked for
- * threads and thread groups.  Most things considering CPU time want to group
- * these counts together and treat all three of them in parallel.
- */
-struct task_cputime {
+/* Temporary type to ease cputime_t to nsecs conversion */
+struct task_cputime_t {
 	cputime_t utime;
 	cputime_t stime;
 	unsigned long long sum_exec_runtime;
@@ -652,34 +610,6 @@ struct task_cputime_atomic {
  * Reset by start_kernel()->sched_init()->init_idle()->init_idle_preempt_count().
  */
 #define INIT_PREEMPT_COUNT	PREEMPT_OFFSET
-
-/**
- * struct util_est - Estimation utilization of FAIR tasks
- * @enqueued: instantaneous estimated utilization of a task/cpu
- * @ewma:     the Exponential Weighted Moving Average (EWMA)
- *            utilization of a task
- *
- * Support data structure to track an Exponential Weighted Moving Average
- * (EWMA) of a FAIR task's utilization. New samples are added to the moving
- * average each time a task completes an activation. Sample's weight is chosen
- * so that the EWMA will be relatively insensitive to transient changes to the
- * task's workload.
- *
- * The enqueued attribute has a slightly different meaning for tasks and cpus:
- * - task:   the task's util_avg at last task dequeue time
- * - cfs_rq: the sum of util_est.enqueued for each RUNNABLE task on that CPU
- * Thus, the util_est.enqueued of a task represents the contribution on the
- * estimated utilization of the CPU where that task is currently enqueued.
- *
- * Only for tasks we track a moving average of the past instantaneous
- * estimated utilization. This allows to absorb sporadic drops in utilization
- * of an otherwise almost periodic task.
- */
-struct util_est {
-	unsigned int			enqueued;
-	unsigned int			ewma;
-#define UTIL_EST_WEIGHT_SHIFT		2
-};
 
 /*
  * Initial preempt_count value; reflects the preempt_count schedule invariant
@@ -1071,7 +1001,6 @@ extern void wake_up_q(struct wake_q_head *head);
 #define SD_OVERLAP		0x2000	/* sched_domains of this level overlap */
 #define SD_NUMA			0x4000	/* cross-node balancing */
 #define SD_SHARE_CAP_STATES	0x8000  /* Domain members share capacity state */
-#define SD_NO_LOAD_BALANCE     	0x10000  /* flag for hmp scheduler */
 
 #ifdef CONFIG_SCHED_SMT
 static inline int cpu_smt_flags(void)
@@ -1119,31 +1048,6 @@ struct sched_group_energy {
 	unsigned int nr_cap_states;	/* number of capacity states */
 	struct capacity_state *cap_states; /* ptr to capacity state array */
 };
-
-struct energy_env {
-	struct sched_group	*sg_top;
-	struct sched_group	*sg_cap;
-	int			cap_idx;
-	int			util_delta;
-	int			src_cpu;
-	int			dst_cpu;
-	int			trg_cpu;
-	int			energy;
-	int			payoff;
-	struct task_struct	*p;
-	struct {
-		int before;
-		int after;
-		int delta;
-		int diff;
-	} nrg;
-	struct {
-		int before;
-		int after;
-		int delta;
-	} cap;
-};
-
 
 unsigned long capacity_curr_of(int cpu);
 
@@ -1320,25 +1224,6 @@ extern void wake_up_if_idle(int cpu);
 # define SD_INIT_NAME(type)
 #endif
 
-#ifdef CONFIG_SCHED_HMP
-struct hmp_domain {
-	struct cpumask cpus;
-	struct cpumask possible_cpus;
-	struct list_head hmp_domains;
-};
-
-extern int set_hmp_boost(int enable);
-extern int set_hmp_semiboost(int enable);
-extern int set_hmp_boostpulse(int duration);
-extern int get_hmp_boost(void);
-extern int get_hmp_semiboost(void);
-extern int set_hmp_up_threshold(int value);
-extern int set_hmp_down_threshold(int value);
-extern int set_active_down_migration(int enable);
-extern int set_hmp_aggressive_up_migration(int enable);
-extern int set_hmp_aggressive_yield(int enable);
-#endif /* CONFIG_SCHED_HMP */
-
 #else /* CONFIG_SMP */
 
 struct sched_domain_attr;
@@ -1432,31 +1317,7 @@ struct sched_avg {
 	u64 last_update_time, load_sum;
 	u32 util_sum, period_contrib;
 	unsigned long load_avg, util_avg;
-	struct util_est			util_est;
-#ifdef CONFIG_SCHED_HMP
-	u64 hmp_load_sum, hmp_load_avg;
-	u64 hmp_last_up_migration;
-	u64 hmp_last_down_migration;
-#endif
 };
-
-#ifdef CONFIG_SCHED_EHMP
-#define NOT_ONTIME		1
-#define ONTIME_MIGRATING	2
-#define ONTIME			4
-
-struct ontime_avg {
-	u64 ontime_migration_time;
-	u64 load_sum;
-	unsigned long load_avg;
-};
-
-struct ontime_entity {
-	struct ontime_avg avg;
-	int flags;
-	int cpu;
-};
-#endif
 
 #ifdef CONFIG_SCHEDSTATS
 struct sched_statistics {
@@ -1593,9 +1454,6 @@ struct sched_entity {
 	 */
 	struct sched_avg	avg ____cacheline_aligned_in_smp;
 #endif
-#ifdef CONFIG_SCHED_EHMP
-	struct ontime_entity	ontime;
-#endif
 };
 
 struct sched_rt_entity {
@@ -1614,15 +1472,6 @@ struct sched_rt_entity {
 	/* rq "owned" by this entity/group: */
 	struct rt_rq		*my_q;
 #endif
-#ifdef CONFIG_SMP
-	/*
-	 * Per entity load average tracking.
-	 *
-	 * Put into separate cache line so it does not
-	 * collide with read-mostly values above.
-	 */
-	struct sched_avg	avg ____cacheline_aligned_in_smp;
-#endif
 };
 
 struct sched_dl_entity {
@@ -1637,6 +1486,7 @@ struct sched_dl_entity {
 	u64 dl_deadline;	/* relative deadline of each instance	*/
 	u64 dl_period;		/* separation of two instances (period) */
 	u64 dl_bw;		/* dl_runtime / dl_deadline		*/
+	u64 dl_density;		/* dl_runtime / dl_deadline		*/
 
 	/*
 	 * Actual scheduling parameters. Initialized with the values above,
@@ -1744,9 +1594,6 @@ struct task_struct {
 	const struct sched_class *sched_class;
 	struct sched_entity se;
 	struct sched_rt_entity rt;
-#ifdef CONFIG_SCHED_USE_FLUID_RT
-	int victim_flag;
-#endif
 #ifdef CONFIG_SCHED_WALT
 	struct ravg ravg;
 	/*
@@ -1819,9 +1666,10 @@ struct task_struct {
 	unsigned sched_migrated:1;
 	unsigned sched_remote_wakeup:1;
 #ifdef CONFIG_PSI
+	/* Stalled due to lack of memory */
+	unsigned			in_memstall:1;
 	unsigned			sched_psi_wake_requeue:1;
 #endif
-
 	unsigned :0; /* force alignment to the next boundary */
 
 	/* unserialized, strictly 'current' */
@@ -1967,8 +1815,8 @@ struct task_struct {
 	struct seccomp seccomp;
 
 /* Thread group tracking */
-	u64 parent_exec_id;
-	u64 self_exec_id;
+   	u32 parent_exec_id;
+   	u32 self_exec_id;
 /* Protection of (de-)allocation: mm, files, fs, tty, keyrings, mems_allowed,
  * mempolicy */
 	spinlock_t alloc_lock;
@@ -1986,10 +1834,6 @@ struct task_struct {
 	struct rt_mutex_waiter *pi_blocked_on;
 #endif
 
-#ifdef CONFIG_MM_EVENT_STAT
-	struct mm_event_task	mm_event[MM_TYPE_NUM];
-	unsigned long		next_period;
-#endif
 #ifdef CONFIG_DEBUG_MUTEXES
 	/* mutex deadlock detection */
 	struct mutex_waiter *blocked_on;
@@ -2042,9 +1886,9 @@ struct task_struct {
 	unsigned long ptrace_message;
 	siginfo_t *last_siginfo; /* For ptrace use.  */
 	struct task_io_accounting ioac;
-#ifdef CONFIG_PSI
-	/* Pressure stall state */
-	unsigned int			psi_flags;
+#ifdef CONFIG_PSI	
+	/* Pressure stall state */	
+	unsigned int			psi_flags;	
 #endif
 #if defined(CONFIG_TASK_XACCT)
 	u64 acct_rss_mem1;	/* accumulated rss usage */
@@ -2070,8 +1914,6 @@ struct task_struct {
 #endif
 	struct list_head pi_state_list;
 	struct futex_pi_state *pi_state_cache;
-	struct mutex futex_exit_mutex;
-	unsigned int futex_state;
 #endif
 #ifdef CONFIG_PERF_EVENTS
 	struct perf_event_context *perf_event_ctxp[perf_nr_task_contexts];
@@ -2534,11 +2376,14 @@ static inline cputime_t task_gtime(struct task_struct *t)
 #endif
 extern void task_cputime_adjusted(struct task_struct *p, cputime_t *ut, cputime_t *st);
 extern void thread_group_cputime_adjusted(struct task_struct *p, cputime_t *ut, cputime_t *st);
+extern void cputime_adjust(struct task_cputime *curr, struct prev_cputime *prev,
+			   cputime_t *ut, cputime_t *st);
 
 /*
  * Per process flags
  */
 #define PF_EXITING	0x00000004	/* getting shut down */
+#define PF_EXITPIDONE	0x00000008	/* pi exit done on shut down */
 #define PF_VCPU		0x00000010	/* I'm a virtual CPU */
 #define PF_WQ_WORKER	0x00000020	/* I'm a workqueue worker */
 #define PF_FORKNOEXEC	0x00000040	/* forked but didn't exec */
@@ -2559,7 +2404,6 @@ extern void thread_group_cputime_adjusted(struct task_struct *p, cputime_t *ut, 
 #define PF_KTHREAD	0x00200000	/* I am a kernel thread */
 #define PF_RANDOMIZE	0x00400000	/* randomize virtual address space */
 #define PF_SWAPWRITE	0x00800000	/* Allowed to write to swap */
-#define PF_MEMSTALL	0x01000000	/* Stalled due to lack of memory */
 #define PF_NO_SETAFFINITY 0x04000000	/* Userland is not allowed to meddle with cpus_allowed */
 #define PF_MCE_EARLY    0x08000000      /* Early kill for mce process policy */
 #define PF_MUTEX_TESTER	0x20000000	/* Thread belongs to the rt mutex tester */
@@ -3173,28 +3017,6 @@ static inline unsigned long sigsp(unsigned long sp, struct ksignal *ksig)
  */
 extern struct mm_struct * mm_alloc(void);
 
-/**
- * mmgrab() - Pin a &struct mm_struct.
- * @mm: The &struct mm_struct to pin.
- *
- * Make sure that @mm will not get freed even after the owning task
- * exits. This doesn't guarantee that the associated address space
- * will still exist later on and mmget_not_zero() has to be used before
- * accessing it.
- *
- * This is a preferred way to to pin @mm for a longer/unbounded amount
- * of time.
- *
- * Use mmdrop() to release the reference acquired by mmgrab().
- *
- * See also <Documentation/vm/active_mm.txt> for an in-depth explanation
- * of &mm_struct.mm_count vs &mm_struct.mm_users.
- */
-static inline void mmgrab(struct mm_struct *mm)
-{
-	atomic_inc(&mm->mm_count);
-}
-
 /* mmdrop drops the mm and the page tables */
 extern void __mmdrop(struct mm_struct *);
 static inline void mmdrop(struct mm_struct *mm)
@@ -3239,10 +3061,8 @@ extern struct mm_struct *get_task_mm(struct task_struct *task);
  * succeeds.
  */
 extern struct mm_struct *mm_access(struct task_struct *task, unsigned int mode);
-/* Remove the current tasks stale references to the old mm_struct on exit() */
-extern void exit_mm_release(struct task_struct *, struct mm_struct *);
-/* Remove the current tasks stale references to the old mm_struct on exec() */
-extern void exec_mm_release(struct task_struct *, struct mm_struct *);
+/* Remove the current tasks stale references to the old mm_struct */
+extern void mm_release(struct task_struct *, struct mm_struct *);
 
 #ifdef CONFIG_HAVE_COPY_THREAD_TLS
 extern int copy_thread_tls(unsigned long, unsigned long, unsigned long,
@@ -3389,7 +3209,7 @@ static inline int thread_group_empty(struct task_struct *p)
  * Protects ->fs, ->files, ->mm, ->group_info, ->comm, keyring
  * subscriptions and synchronises with wait4().  Also used in procfs.  Also
  * pins the final release of task.io_context.  Also protects ->cpuset and
- * ->cgroup.subsys[]. And ->vfork_done. And ->sysvshm.shm_clist.
+ * ->cgroup.subsys[]. And ->vfork_done.
  *
  * Nests both inside and outside of read_lock(&tasklist_lock).
  * It must not be nested with write_lock_irq(&tasklist_lock),
@@ -3923,6 +3743,8 @@ static inline unsigned long rlimit_max(unsigned int limit)
 #define SCHED_CPUFREQ_RT	(1U << 0)
 #define SCHED_CPUFREQ_DL	(1U << 1)
 #define SCHED_CPUFREQ_IOWAIT	(1U << 2)
+
+#define SCHED_CPUFREQ_RT_DL	(SCHED_CPUFREQ_RT | SCHED_CPUFREQ_DL)	
 
 #ifdef CONFIG_CPU_FREQ
 struct update_util_data {
