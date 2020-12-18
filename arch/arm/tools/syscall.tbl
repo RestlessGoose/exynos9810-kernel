@@ -409,3 +409,4 @@
 392	common	preadv2			sys_preadv2
 393	common	pwritev2		sys_pwritev2
 436	common	close_range		sys_close_range
+441	common	epoll_pwait2		sys_epoll_pwait2
