@@ -325,6 +325,20 @@ static inline bool use_pelt(void)
 	return (!sysctl_sched_use_walt_cpu_util || walt_disabled);
 #else
 	return true;
+	struct rq *rq = cpu_rq(cpu);
+	unsigned long cfs_max;
+	struct sugov_cpu *loadcpu = &per_cpu(sugov_cpu, cpu);
+
+	cfs_max = arch_scale_cpu_capacity(NULL, cpu);
+
+	*util = min(rq->cfs.avg.util_avg, cfs_max);
+	*max = cfs_max;
+
+	*util = boosted_cpu_util(cpu, &loadcpu->walt_load);
+	
+#ifdef CONFIG_UCLAMP_TASK
+	*util = uclamp_util_with(rq, *util, NULL);
+	*util = min(*max, *util);
 #endif
 }
 
