@@ -4460,30 +4460,6 @@ static const struct alg_test_desc alg_test_descs[] = {
 				}
 			}
 		}
-#if defined(CONFIG_CRYPTO_DISKCIPHER) && !defined(CONFIG_EXYNOS_FMP_FIPS)
-	}, {
-		.alg = "xts(aes)-disk",
-		.test = alg_test_diskcipher,
-		.suite = {
-			.cipher = __VECS(aes_xts_tv_template)
-		}
-#endif
-	}, {
-		.alg = "zstd",
-		.test = alg_test_comp,
-		.fips_allowed = 1,
-		.suite = {
-			.comp = {
-				.comp = {
-					.vecs = zstd_comp_tv_template,
-					.count = ZSTD_COMP_TEST_VECTORS
-				},
-				.decomp = {
-					.vecs = zstd_decomp_tv_template,
-					.count = ZSTD_DECOMP_TEST_VECTORS
-				}
-			}
-		}
 	}
 };
 
