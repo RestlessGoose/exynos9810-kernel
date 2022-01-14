@@ -4,7 +4,7 @@
 
 menuconfig TRACE
 	bool "TRACE driver support"
-	default y
+	default n
 	help
 	  The "TRACE driver" is a kind of driver for debugging
 
