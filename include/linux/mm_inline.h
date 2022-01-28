@@ -47,7 +47,15 @@ static __always_inline void update_lru_size(struct lruvec *lruvec,
 
 static inline bool lru_gen_enabled(void)
 {
-	return true;
+#ifdef CONFIG_LRU_GEN_ENABLED
+	DECLARE_STATIC_KEY_TRUE(lru_gen_caps[NR_LRU_GEN_CAPS]);
+
+	return static_branch_likely(&lru_gen_caps[LRU_GEN_CORE]);
+#else
+	DECLARE_STATIC_KEY_FALSE(lru_gen_caps[NR_LRU_GEN_CAPS]);
+
+	return static_branch_unlikely(&lru_gen_caps[LRU_GEN_CORE]);
+#endif
 }
 
 static inline bool lru_gen_in_fault(void)
@@ -165,7 +173,7 @@ static inline bool lru_gen_add_page(struct lruvec *lruvec,
 
 	VM_WARN_ON_ONCE_PAGE(gen != -1, page);
 
-	if (PageUnevictable(page))
+	if (PageUnevictable(page) || !lrugen->enabled)
 		return false;
 
 	if (PageActive(page))
