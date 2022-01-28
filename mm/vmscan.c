@@ -106,6 +106,12 @@ struct scan_control {
 	/* One of the zones is ready for compaction */
 	unsigned int compaction_ready:1;
 
+#ifdef CONFIG_LRU_GEN
+	/* Multi-memcg aging/swapping hints for kswapd. */
+	unsigned int memcgs_need_aging:1;
+	unsigned int memcgs_need_swapping:1;
+	unsigned int memcgs_avoid_swapping:1;
+#endif
 	/* Incremented by the number of inactive pages that were scanned */
 	unsigned long nr_scanned;
 
@@ -3659,6 +3665,22 @@ static void lru_gen_age_node(struct pglist_data *pgdat, struct scan_control *sc)
 
 	VM_WARN_ON_ONCE(!current_is_kswapd());
 
+	/*
+	 * To reduce the chance of going into the aging path or swapping, which
+	 * can be costly, optimistically skip them unless their corresponding
+	 * flags were cleared in the eviction path. This improves the overall
+	 * performance when multiple memcgs are available.
+	 */
+	if (!sc->memcgs_need_aging) {
+		sc->memcgs_need_aging = true;
+		sc->memcgs_avoid_swapping = !sc->memcgs_need_swapping;
+		sc->memcgs_need_swapping = true;
+		return;
+	}
+
+	sc->memcgs_need_swapping = true;
+	sc->memcgs_avoid_swapping = true;
+
 	current->reclaim_state->mm_walk = &pgdat->mm_walk;
 
 	memcg = mem_cgroup_iter(NULL, NULL, NULL);
@@ -4075,7 +4097,8 @@ static int isolate_pages(struct lruvec *lruvec, struct scan_control *sc, int swa
 	return scanned;
 }
 
-static int evict_pages(struct lruvec *lruvec, struct scan_control *sc, int swappiness)
+static int evict_pages(struct lruvec *lruvec, struct scan_control *sc, int swappiness,
+		       bool *swapped)
 {
 	int type;
 	int scanned;
@@ -4142,6 +4165,9 @@ static int evict_pages(struct lruvec *lruvec, struct scan_control *sc, int swapp
 
 	sc->nr_reclaimed += reclaimed;
 
+	if (type == LRU_GEN_ANON && swapped)
+		*swapped = true;
+
 	return scanned;
 }
 
@@ -4153,9 +4179,16 @@ static unsigned long get_nr_to_scan(struct lruvec *lruvec, struct mem_cgroup *me
 	DEFINE_MAX_SEQ(lruvec);
 	DEFINE_MIN_SEQ(lruvec);
 
-	need_aging = should_run_aging(lruvec, memcg, max_seq, min_seq, sc, can_swap, &nr_to_scan);
-	if (!need_aging)
+	/* Preserve the Linux 4.9 aging and eviction-size calculation. */
+	need_aging = should_run_aging(lruvec, memcg, max_seq, min_seq,
+				      sc, can_swap, &nr_to_scan);
+	if (!nr_to_scan && !need_aging)
+		return 0;
+
+	if (!need_aging) {
+		sc->memcgs_need_aging = false;
 		return nr_to_scan;
+	}
 
 	/* skip the aging path at the default priority */
 	if (sc->priority == DEF_PRIORITY)
@@ -4176,7 +4209,9 @@ static void lru_gen_shrink_lruvec(struct lruvec *lruvec, struct mem_cgroup *memc
 				  struct scan_control *sc)
 {
 	struct blk_plug plug;
-	unsigned long scanned = 0;
+	long scanned = 0;
+	bool swapped = false;
+	unsigned long reclaimed = sc->nr_reclaimed;
 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 
 	lru_add_drain();
@@ -4202,13 +4237,19 @@ static void lru_gen_shrink_lruvec(struct lruvec *lruvec, struct mem_cgroup *memc
 		if (!nr_to_scan)
 			break;
 
-		delta = evict_pages(lruvec, sc, swappiness);
+		delta = evict_pages(lruvec, sc, swappiness, &swapped);
 		if (!delta)
 			break;
 
-		scanned += delta;
-		if (scanned >= nr_to_scan)
+		if (sc->memcgs_avoid_swapping && swappiness < 200 && swapped)
 			break;
+
+		scanned += delta;
+		if (scanned >= nr_to_scan) {
+			if (!swapped && sc->nr_reclaimed - reclaimed >= MIN_LRU_BATCH)
+				sc->memcgs_need_swapping = false;
+			break;
+		}
 
 		cond_resched();
 	}
