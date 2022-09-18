@@ -821,12 +821,16 @@ static unsigned char swap_entry_free(struct swap_info_struct *p,
 		atomic_long_inc(&nr_swap_pages);
 		p->inuse_pages--;
 		frontswap_invalidate_page(p->type, offset);
+
 		if (p->flags & SWP_BLKDEV) {
 			struct gendisk *disk = p->bdev->bd_disk;
+
 			if (disk->fops->swap_slot_free_notify)
 				disk->fops->swap_slot_free_notify(p->bdev,
 								  offset);
 		}
+
+		clear_shadow_from_swap_cache(entry);
 	}
 
 	return usage;
