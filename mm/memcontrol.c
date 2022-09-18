@@ -2134,6 +2134,7 @@ static void commit_charge(struct page *page, struct mem_cgroup *memcg,
 	 *
 	 * - a page cache insertion, a swapin fault, or a migration
 	 *   have the page locked
+
 	 */
 	page->mem_cgroup = memcg;
 

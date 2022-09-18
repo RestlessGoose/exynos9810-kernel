@@ -1000,9 +1000,15 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		if (!sc->may_unmap && page_mapped(page))
 			goto keep_locked;
 
+		/* page_update_gen() tried to promote this page? */
+		if (lru_gen_enabled() && !skip_reference_check &&
+		    page_mapped(page) && PageReferenced(page))
+			goto keep_locked;
+
 		/* Double the slab pressure for mapped and swapcache pages */
 		if (page_mapped(page) || PageSwapCache(page))
 			sc->nr_scanned++;
+
 
 		may_enter_fs = (sc->gfp_mask & __GFP_FS) ||
 			(PageSwapCache(page) && (sc->gfp_mask & __GFP_IO));
@@ -2744,6 +2750,36 @@ static bool positive_ctrl_err(struct ctrl_pos *sp, struct ctrl_pos *pv)
  *                          the aging
  ******************************************************************************/
 
+/* promote pages accessed through page tables */
+static int page_update_gen(struct page *page, int gen)
+{
+	unsigned long prev_flags;
+	unsigned long new_flags, old_flags = READ_ONCE(page->flags);
+
+	VM_WARN_ON_ONCE(gen >= MAX_NR_GENS);
+	VM_WARN_ON_ONCE(!rcu_read_lock_held());
+
+	for (;;) {
+		/* lru_gen_del_page() has isolated this page? */
+		if (!(old_flags & LRU_GEN_MASK)) {
+			/* for shrink_page_list() */
+			new_flags = old_flags | BIT(PG_referenced);
+		} else {
+			new_flags = old_flags &
+				~(LRU_GEN_MASK | LRU_REFS_MASK | LRU_REFS_FLAGS);
+			new_flags |= (gen + 1UL) << LRU_GEN_PGOFF;
+		}
+
+		prev_flags = cmpxchg(&page->flags, old_flags, new_flags);
+		if (prev_flags == old_flags)
+			break;
+
+		old_flags = prev_flags;
+	}
+
+	return ((old_flags & LRU_GEN_MASK) >> LRU_GEN_PGOFF) - 1;
+}
+
 /* protect pages accessed multiple times through file descriptors */
 static int page_inc_gen(struct lruvec *lruvec, struct page *page, bool reclaiming)
 {
@@ -2756,6 +2792,12 @@ static int page_inc_gen(struct lruvec *lruvec, struct page *page, bool reclaimin
 	VM_WARN_ON_ONCE_PAGE(!(old_flags & LRU_GEN_MASK), page);
 
 	for (;;) {
+		new_gen = ((old_flags & LRU_GEN_MASK) >> LRU_GEN_PGOFF) - 1;
+		/* page_update_gen() has promoted this page? */
+		if (new_gen >= 0 && new_gen != old_gen)
+			return new_gen;
+
+
 		new_gen = (old_gen + 1) % MAX_NR_GENS;
 
 		new_flags = old_flags &
@@ -2776,6 +2818,47 @@ static int page_inc_gen(struct lruvec *lruvec, struct page *page, bool reclaimin
 	lru_gen_update_size(lruvec, page, old_gen, new_gen);
 
 	return new_gen;
+}
+
+static unsigned long get_pte_pfn(pte_t pte, struct vm_area_struct *vma, unsigned long addr)
+{
+	unsigned long pfn = pte_pfn(pte);
+
+	VM_WARN_ON_ONCE(addr < vma->vm_start || addr >= vma->vm_end);
+
+	if (!pte_present(pte) || is_zero_pfn(pfn))
+		return -1;
+
+	if (WARN_ON_ONCE(pte_special(pte)))
+		return -1;
+
+	if (WARN_ON_ONCE(!pfn_valid(pfn)))
+		return -1;
+
+	return pfn;
+}
+
+static struct page *get_pfn_page(unsigned long pfn, struct mem_cgroup *memcg,
+				 struct pglist_data *pgdat)
+{
+	struct page *page;
+	struct mem_cgroup *page_memcg;
+
+	/* try to avoid unnecessary memory loads */
+	if (pfn < pgdat->node_start_pfn || pfn >= pgdat_end_pfn(pgdat))
+		return NULL;
+
+	page = compound_head(pfn_to_page(pfn));
+	if (page_to_nid(page) != pgdat->node_id)
+		return NULL;
+
+	page_memcg = page_memcg_rcu(page);
+	if (!page_memcg && !mem_cgroup_disabled())
+		page_memcg = root_mem_cgroup;
+	if (page_memcg != memcg)
+		return NULL;
+
+	return page;
 }
 
 static void inc_min_seq(struct lruvec *lruvec, int type)
@@ -2970,6 +3053,128 @@ static void lru_gen_age_node(struct pglist_data *pgdat, struct scan_control *sc)
 	} while ((memcg = mem_cgroup_iter(NULL, memcg, NULL)));
 }
 
+/*
+ * This function exploits spatial locality when shrink_page_list() walks the
+ * rmap. It scans the adjacent PTEs of a young PTE and promotes hot pages.
+ *
+ * The 4.9 rmap walker passes the current PTE and its page-table lock directly
+ * instead of using struct page_vma_mapped_walk.
+ */
+void lru_gen_look_around(struct page *page, struct vm_area_struct *vma,
+			 unsigned long address, pte_t *pte, spinlock_t *ptl)
+{
+	int i;
+	unsigned long start;
+	unsigned long end;
+	unsigned long addr;
+	unsigned long bitmap[BITS_TO_LONGS(MIN_LRU_BATCH)] = {};
+	struct mem_cgroup *memcg = page_memcg(page);
+	struct pglist_data *pgdat = page_pgdat(page);
+	struct lruvec *lruvec;
+	unsigned long max_seq;
+	int old_gen, new_gen;
+
+	lockdep_assert_held(ptl);
+	VM_WARN_ON_ONCE_PAGE(PageLRU(page), page);
+
+	if (spin_is_contended(ptl))
+		return;
+
+	if (!memcg && !mem_cgroup_disabled())
+		memcg = root_mem_cgroup;
+
+	lruvec = mem_cgroup_lruvec(pgdat, memcg);
+	max_seq = READ_ONCE(lruvec->lrugen.max_seq);
+	new_gen = lru_gen_from_seq(max_seq);
+
+	start = max(address & PMD_MASK, vma->vm_start);
+	end = min(address | ~PMD_MASK, vma->vm_end - 1) + 1;
+
+	if (end - start > MIN_LRU_BATCH * PAGE_SIZE) {
+		if (address - start < MIN_LRU_BATCH * PAGE_SIZE / 2)
+			end = start + MIN_LRU_BATCH * PAGE_SIZE;
+		else if (end - address < MIN_LRU_BATCH * PAGE_SIZE / 2)
+			start = end - MIN_LRU_BATCH * PAGE_SIZE;
+		else {
+			start = address - MIN_LRU_BATCH * PAGE_SIZE / 2;
+			end = address + MIN_LRU_BATCH * PAGE_SIZE / 2;
+		}
+	}
+
+	pte = pte - (address - start) / PAGE_SIZE;
+
+	rcu_read_lock();
+	arch_enter_lazy_mmu_mode();
+
+	for (i = 0, addr = start; addr != end; i++, addr += PAGE_SIZE) {
+		unsigned long pfn;
+
+		pfn = get_pte_pfn(pte[i], vma, addr);
+		if (pfn == -1)
+			continue;
+
+		if (!pte_young(pte[i]))
+			continue;
+
+		page = get_pfn_page(pfn, memcg, pgdat);
+		if (!page)
+			continue;
+
+		if (!ptep_test_and_clear_young(vma, addr, pte + i))
+			VM_WARN_ON_ONCE(true);
+
+		if (pte_dirty(pte[i]) && !PageDirty(page) &&
+		    !(PageAnon(page) && PageSwapBacked(page) &&
+		      !PageSwapCache(page)))
+			set_page_dirty(page);
+
+		old_gen = page_lru_gen(page);
+		if (old_gen < 0)
+			SetPageReferenced(page);
+		else if (old_gen != new_gen)
+			__set_bit(i, bitmap);
+	}
+
+	arch_leave_lazy_mmu_mode();
+	rcu_read_unlock();
+
+	if (bitmap_weight(bitmap, MIN_LRU_BATCH) < 15) {
+		for_each_set_bit(i, bitmap, MIN_LRU_BATCH) {
+			page = pte_page(pte[i]);
+			activate_page(page);
+		}
+		return;
+	}
+
+	/* page_update_gen() requires stable page_memcg() */
+	if (!mem_cgroup_trylock_pages(memcg))
+		return;
+
+	spin_lock_irq(&pgdat->lru_lock);
+	new_gen = lru_gen_from_seq(lruvec->lrugen.max_seq);
+
+	for_each_set_bit(i, bitmap, MIN_LRU_BATCH) {
+		struct mem_cgroup *page_memcg;
+
+		page = compound_head(pte_page(pte[i]));
+		page_memcg = page_memcg_rcu(page);
+		if (!page_memcg && !mem_cgroup_disabled())
+			page_memcg = root_mem_cgroup;
+		if (page_memcg != memcg)
+			continue;
+
+		old_gen = page_update_gen(page, new_gen);
+		if (old_gen < 0 || old_gen == new_gen)
+			continue;
+
+		lru_gen_update_size(lruvec, page, old_gen, new_gen);
+	}
+
+	spin_unlock_irq(&pgdat->lru_lock);
+
+	mem_cgroup_unlock_pages();
+}
+
 /******************************************************************************
  *                          the eviction
  ******************************************************************************/
@@ -3003,6 +3208,12 @@ static bool sort_page(struct lruvec *lruvec, struct page *page, int tier_idx)
 		VM_WARN_ON_ONCE_PAGE(!success, page);
 		SetPageSwapBacked(page);
 		add_page_to_lru_list_tail(page, lruvec, LRU_INACTIVE_ANON);
+		return true;
+	}
+
+	/* promoted */
+	if (gen != lru_gen_from_seq(lrugen->min_seq[type])) {
+		list_move(&page->lru, &lrugen->lists[gen][type][zone]);
 		return true;
 	}
 

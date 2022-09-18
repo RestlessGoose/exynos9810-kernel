@@ -61,6 +61,7 @@
 #include <linux/hugetlb.h>
 #include <linux/backing-dev.h>
 #include <linux/page_idle.h>
+#include <linux/mm_inline.h>
 
 #include <asm/tlbflush.h>
 
@@ -942,9 +943,16 @@ static int page_referenced_one(struct page *page, struct vm_area_struct *vma,
 		spin_unlock(ptl);
 		pra->vm_flags |= VM_LOCKED;
 		return SWAP_FAIL; /* To break the loop */
+
 	}
 
 	if (pte) {
+		if (lru_gen_enabled() && pte_young(*pte) &&
+		    !(vma->vm_flags & (VM_SEQ_READ | VM_RAND_READ))) {
+			lru_gen_look_around(page, vma, address, pte, ptl);
+			referenced++;
+		}
+
 		if (ptep_clear_flush_young_notify(vma, address, pte)) {
 			/*
 			 * Don't treat a reference through a sequentially read

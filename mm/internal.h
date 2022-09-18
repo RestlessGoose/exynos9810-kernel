@@ -39,6 +39,19 @@
 void page_writeback_init(void);
 
 int do_swap_page(struct fault_env *fe, pte_t orig_pte);
+void activate_page(struct page *page);
+
+#ifdef CONFIG_LRU_GEN
+void lru_gen_look_around(struct page *page, struct vm_area_struct *vma,
+			 unsigned long address, pte_t *pte, spinlock_t *ptl);
+#else
+static inline void lru_gen_look_around(struct page *page,
+				      struct vm_area_struct *vma,
+				      unsigned long address,
+				      pte_t *pte, spinlock_t *ptl)
+{
+}
+#endif
 
 void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *start_vma,
 		unsigned long floor, unsigned long ceiling);
