@@ -757,6 +757,8 @@ int alloc_set_pte(struct fault_env *fe, struct mem_cgroup *memcg,
 #define NODES_PGOFF		(SECTIONS_PGOFF - NODES_WIDTH)
 #define ZONES_PGOFF		(NODES_PGOFF - ZONES_WIDTH)
 #define LAST_CPUPID_PGOFF	(ZONES_PGOFF - LAST_CPUPID_WIDTH)
+#define LRU_GEN_PGOFF		(LAST_CPUPID_PGOFF - LRU_GEN_WIDTH)
+#define LRU_REFS_PGOFF		(LRU_GEN_PGOFF - LRU_REFS_WIDTH)
 
 /*
  * Define the bit shifts to access each section.  For non-existent

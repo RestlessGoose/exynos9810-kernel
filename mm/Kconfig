@@ -801,6 +801,13 @@ config BALANCE_ANON_FILE_RECLAIM
 	  Swapping anonymous pages out to memory can be efficient enough to justify
 	  treating anonymous and file backed pages equally.
 
+config LRU_GEN
+	bool "Multi-Gen LRU"
+	depends on MMU
+	depends on 64BIT || !SPARSEMEM || SPARSEMEM_VMEMMAP
+	help
+	  A high performance LRU implementation to overcommit memory.
+
 config KSWAPD_CPU
 	hex "Set kswapd cpu affinity by default"
 	default 0x3F

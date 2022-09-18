@@ -431,6 +431,12 @@ void lru_cache_add(struct page *page)
 {
 	VM_BUG_ON_PAGE(PageActive(page) && PageUnevictable(page), page);
 	VM_BUG_ON_PAGE(PageLRU(page), page);
+
+	/* Newly faulted pages enter the youngest generation. */
+	if (lru_gen_enabled() && !PageUnevictable(page) &&
+	    lru_gen_in_fault() && !(current->flags & PF_MEMALLOC))
+		SetPageActive(page);
+
 	__lru_cache_add(page);
 }
 
@@ -536,7 +542,6 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
 	del_page_from_lru_list(page, lruvec, lru + active);
 	ClearPageActive(page);
 	ClearPageReferenced(page);
-	add_page_to_lru_list(page, lruvec, lru);
 
 	if (PageWriteback(page) || PageDirty(page)) {
 		/*
@@ -544,13 +549,14 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
 		 * It can make readahead confusing.  But race window
 		 * is _really_ small and  it's non-critical problem.
 		 */
+		add_page_to_lru_list(page, lruvec, lru);
 		SetPageReclaim(page);
 	} else {
 		/*
 		 * The page's writeback ends up during pagevec
 		 * We moves tha page into tail of inactive.
 		 */
-		list_move_tail(&page->lru, &lruvec->lists[lru]);
+		add_page_to_lru_list_tail(page, lruvec, lru);
 		__count_vm_event(PGROTATED);
 	}
 
@@ -560,10 +566,10 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
 }
 
 
-static void lru_deactivate_fn(struct page *page, struct lruvec *lruvec,
-			    void *arg)
+static void lru_deactivate_fn(struct page *page, struct lruvec *lruvec, void *arg)
 {
-	if (PageLRU(page) && PageActive(page) && !PageUnevictable(page)) {
+	if (PageLRU(page) && !PageUnevictable(page) &&
+	(PageActive(page) || lru_gen_enabled())) {
 		int file = page_is_file_cache(page);
 		int lru = page_lru_base_type(page);
 
@@ -646,7 +652,8 @@ void deactivate_file_page(struct page *page)
  */
 void deactivate_page(struct page *page)
 {
-	if (PageLRU(page) && PageActive(page) && !PageUnevictable(page)) {
+	if (PageLRU(page) && !PageUnevictable(page) &&
+		(PageActive(page) || lru_gen_enabled())) {
 		struct pagevec *pvec = &get_cpu_var(lru_deactivate_pvecs);
 
 		get_page(page);

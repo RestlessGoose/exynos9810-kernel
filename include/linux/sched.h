@@ -1770,6 +1770,10 @@ struct task_struct {
 	unsigned sched_contributes_to_load:1;
 	unsigned sched_migrated:1;
 	unsigned sched_remote_wakeup:1;
+#ifdef CONFIG_LRU_GEN
+	/* whether the LRU algorithm may apply to this access */
+	unsigned in_lru_fault:1;
+#endif
 #ifdef CONFIG_PSI
 	/* Stalled due to lack of memory */
 	unsigned			in_memstall:1;
