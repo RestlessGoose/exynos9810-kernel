@@ -5,6 +5,7 @@
 
 #define MIN_NR_GENS		2U
 #define MAX_NR_GENS		4U
+#define MAX_NR_TIERS		4U
 
 #ifndef __GENERATING_BOUNDS_H
 
@@ -267,12 +268,34 @@ enum {
 	LRU_GEN_FILE,
 };
 
+#define MIN_LRU_BATCH		BITS_PER_LONG
+#define MAX_LRU_BATCH		(MIN_LRU_BATCH * 64)
+
+#ifdef CONFIG_LRU_GEN_STATS
+#define NR_HIST_GENS		MAX_NR_GENS
+#else
+#define NR_HIST_GENS		1U
+#endif
+
 struct lru_gen_struct {
 	unsigned long max_seq;
 	unsigned long min_seq[ANON_AND_FILE];
 
 	struct list_head lists[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
 	long nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+
+	/* the exponential moving average of refaulted */
+	unsigned long avg_refaulted[ANON_AND_FILE][MAX_NR_TIERS];
+
+	/* the exponential moving average of evicted+protected */
+	unsigned long avg_total[ANON_AND_FILE][MAX_NR_TIERS];
+
+	/* the first tier doesn't need protection, hence the minus one */
+	unsigned long protected[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS - 1];
+
+	/* can be modified without holding the LRU lock */
+	atomic_long_t evicted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
+	atomic_long_t refaulted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
 };
 
 void lru_gen_init_lruvec(struct lruvec *lruvec);
