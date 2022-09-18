@@ -494,6 +494,23 @@ struct mem_cgroup *lock_page_memcg(struct page *page);
 void __unlock_page_memcg(struct mem_cgroup *memcg);
 void unlock_page_memcg(struct page *page);
 
+/* try to stabilize page_memcg() for all the pages in a memcg */
+static inline bool mem_cgroup_trylock_pages(struct mem_cgroup *memcg)
+{
+	rcu_read_lock();
+
+	if (mem_cgroup_disabled() || !atomic_read(&memcg->moving_account))
+		return true;
+
+	rcu_read_unlock();
+	return false;
+}
+
+static inline void mem_cgroup_unlock_pages(void)
+{
+	rcu_read_unlock();
+}
+
 static inline void __mem_cgroup_update_page_stat(struct page *page,
 						 struct mem_cgroup *memcg,
 						 enum mem_cgroup_stat_index idx,
@@ -731,6 +748,18 @@ static inline void __unlock_page_memcg(struct mem_cgroup *memcg)
 
 static inline void unlock_page_memcg(struct page *page)
 {
+}
+
+static inline bool mem_cgroup_trylock_pages(struct mem_cgroup *memcg)
+{
+	/* to match page_memcg_rcu() */
+	rcu_read_lock();
+	return true;
+}
+
+static inline void mem_cgroup_unlock_pages(void)
+{
+	rcu_read_unlock();
 }
 
 static inline void mem_cgroup_handle_over_high(void)
