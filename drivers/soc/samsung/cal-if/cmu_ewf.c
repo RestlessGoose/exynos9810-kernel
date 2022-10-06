@@ -22,7 +22,7 @@
 static void __iomem *cmu_cmu;
 static spinlock_t cmuewf_lock;
 static int ewf_refcnt[EWF_MAX_INDEX];
-static struct clk_hw ewf_clk;
+static struct clk_hw __maybe_unused ewf_clk;
 
 int get_cmuewf_index(struct device_node *np, unsigned int *index)
 {

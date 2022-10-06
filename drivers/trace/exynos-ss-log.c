@@ -74,8 +74,10 @@ enum ess_kevent_flag {
 	ESS_FLAG_THERMAL,
 	ESS_FLAG_MAILBOX,
 	ESS_FLAG_CLOCKEVENT,
+#ifndef CONFIG_EXYNOS_SNAPSHOT_MINIMIZED_MODE
 	ESS_FLAG_PRINTK,
 	ESS_FLAG_PRINTKL,
+#endif
 	ESS_FLAG_KEVENT,
 };
 
@@ -772,6 +774,7 @@ bool exynos_ss_dumper_one(void *v_dumper, char *line, size_t size, size_t *len)
 		break;
 	}
 #endif
+#ifndef CONFIG_EXYNOS_SNAPSHOT_MINIMIZED_MODE
 	case ESS_FLAG_PRINTK:
 	{
 		char *log;
@@ -825,6 +828,7 @@ bool exynos_ss_dumper_one(void *v_dumper, char *line, size_t size, size_t *len)
 						msg, val, callstack[0], callstack[1], callstack[2], callstack[3]);
 		break;
 	}
+#endif
 	default:
 		snprintf(line, size, "unsupported inforation to dump\n");
 		goto out;
@@ -1420,7 +1424,9 @@ void exynos_ss_print_panic_report(void)
 	pr_info("Panic Report\n");
 	pr_info("============================================================\n");
 	exynos_ss_print_lastinfo();
+#ifdef CONFIG_EXYNOS_SNAPSHOT_FREQ
 	exynos_ss_print_freqinfo();
+#endif
 	exynos_ss_print_calltrace();
 	exynos_ss_print_irq();
 	pr_info("============================================================\n");
