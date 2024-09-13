@@ -1776,8 +1776,8 @@ SYSCALL_DEFINE4(recv, int, fd, void __user *, ubuf, size_t, size,
  *	to pass the user mode parameter for the protocols to sort out.
  */
 
-SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
-		char __user *, optval, int, optlen)
+static int __sys_setsockopt(int fd, int level, int optname,
+			    char __user *optval, int optlen)
 {
 	int err, fput_needed;
 	struct socket *sock;
@@ -1805,13 +1805,19 @@ out_put:
 	return err;
 }
 
+SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+		char __user *, optval, int, optlen)
+{
+	return __sys_setsockopt(fd, level, optname, optval, optlen);
+}
+
 /*
  *	Get a socket option. Because we don't know the option lengths we have
  *	to pass a user mode parameter for the protocols to sort out.
  */
 
-SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
-		char __user *, optval, int __user *, optlen)
+static int __sys_getsockopt(int fd, int level, int optname,
+			    char __user *optval, int __user *optlen)
 {
 	int err, fput_needed;
 	struct socket *sock;
@@ -1834,6 +1840,12 @@ out_put:
 		fput_light(sock->file, fput_needed);
 	}
 	return err;
+}
+
+SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+		char __user *, optval, int __user *, optlen)
+{
+	return __sys_getsockopt(fd, level, optname, optval, optlen);
 }
 
 /*
@@ -2446,12 +2458,13 @@ SYSCALL_DEFINE2(socketcall, int, call, unsigned long __user *, args)
 		err = sys_shutdown(a0, a1);
 		break;
 	case SYS_SETSOCKOPT:
-		err = sys_setsockopt(a0, a1, a[2], (char __user *)a[3], a[4]);
+		err = __sys_setsockopt(a0, a1, a[2], (char __user *)a[3],
+				       a[4]);
 		break;
 	case SYS_GETSOCKOPT:
 		err =
-		    sys_getsockopt(a0, a1, a[2], (char __user *)a[3],
-				   (int __user *)a[4]);
+		    __sys_getsockopt(a0, a1, a[2], (char __user *)a[3],
+				     (int __user *)a[4]);
 		break;
 	case SYS_SENDMSG:
 		err = sys_sendmsg(a0, (struct user_msghdr __user *)a1, a[2]);

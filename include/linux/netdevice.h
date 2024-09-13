@@ -828,7 +828,7 @@ enum bpf_netdev_command {
 	BPF_OFFLOAD_DESTROY,
 };
 
-struct bpf_ext_analyzer_ops;
+struct bpf_prog_offload_ops;
 
 struct netdev_bpf {
 	enum bpf_netdev_command command;
@@ -840,7 +840,7 @@ struct netdev_bpf {
 		/* BPF_OFFLOAD_VERIFIER_PREP */
 		struct {
 			struct bpf_prog *prog;
-			const struct bpf_ext_analyzer_ops *ops; /* callee set */
+			const struct bpf_prog_offload_ops *ops; /* callee set */
 		} verifier;
 		/* BPF_OFFLOAD_TRANSLATE, BPF_OFFLOAD_DESTROY */
 		struct {

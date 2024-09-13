@@ -5,13 +5,16 @@
 #include <linux/netdevice.h>
 #include <linux/printk.h>
 #include <linux/rtnetlink.h>
+#include <linux/rwsem.h>
 
-/* protected by RTNL */
+/* Protects bpf_prog_offload_devs and offload members of all progs.
+ * RTNL lock cannot be taken when holding this lock.
+ */
+static DECLARE_RWSEM(bpf_devs_lock);
 static LIST_HEAD(bpf_prog_offload_devs);
 
 int bpf_prog_offload_init(struct bpf_prog *prog, union bpf_attr *attr)
 {
-	struct net *net = current->nsproxy->net_ns;
 	struct bpf_dev_offload *offload;
 
 	if (!capable(CAP_SYS_ADMIN))
@@ -25,21 +28,27 @@ int bpf_prog_offload_init(struct bpf_prog *prog, union bpf_attr *attr)
 		return -ENOMEM;
 
 	offload->prog = prog;
-	init_waitqueue_head(&offload->verifier_done);
 
-	rtnl_lock();
-	offload->netdev = __dev_get_by_index(net, attr->prog_ifindex);
-	if (!offload->netdev) {
-		rtnl_unlock();
-		kfree(offload);
-		return -EINVAL;
-	}
+	offload->netdev = dev_get_by_index(current->nsproxy->net_ns,
+					   attr->prog_ifindex);
+	if (!offload->netdev)
+		goto err_free;
 
+	down_write(&bpf_devs_lock);
+	if (offload->netdev->reg_state != NETREG_REGISTERED)
+		goto err_unlock;
 	prog->aux->offload = offload;
 	list_add_tail(&offload->offloads, &bpf_prog_offload_devs);
-	rtnl_unlock();
+	dev_put(offload->netdev);
+	up_write(&bpf_devs_lock);
 
 	return 0;
+err_unlock:
+	up_write(&bpf_devs_lock);
+	dev_put(offload->netdev);
+err_free:
+	kfree(offload);
+	return -EINVAL;
 }
 
 static int __bpf_offload_ndo(struct bpf_prog *prog, enum bpf_netdev_command cmd,
@@ -71,13 +80,26 @@ int bpf_prog_offload_verifier_prep(struct bpf_verifier_env *env)
 	if (err)
 		goto exit_unlock;
 
-	env->dev_ops = data.verifier.ops;
-
+	env->prog->aux->offload->dev_ops = data.verifier.ops;
 	env->prog->aux->offload->dev_state = true;
-	env->prog->aux->offload->verifier_running = true;
 exit_unlock:
 	rtnl_unlock();
 	return err;
+}
+
+int bpf_prog_offload_verify_insn(struct bpf_verifier_env *env,
+				 int insn_idx, int prev_insn_idx)
+{
+	struct bpf_dev_offload *offload;
+	int ret = -ENODEV;
+
+	down_read(&bpf_devs_lock);
+	offload = env->prog->aux->offload;
+	if (offload->netdev)
+		ret = offload->dev_ops->insn_hook(env, insn_idx, prev_insn_idx);
+	up_read(&bpf_devs_lock);
+
+	return ret;
 }
 
 static void __bpf_prog_offload_destroy(struct bpf_prog *prog)
@@ -86,9 +108,6 @@ static void __bpf_prog_offload_destroy(struct bpf_prog *prog)
 	struct netdev_bpf data = {};
 
 	data.offload.prog = prog;
-
-	if (offload->verifier_running)
-		wait_event(offload->verifier_done, !offload->verifier_running);
 
 	if (offload->dev_state)
 		WARN_ON(__bpf_offload_ndo(prog, BPF_OFFLOAD_DESTROY, &data));
@@ -102,11 +121,10 @@ void bpf_prog_offload_destroy(struct bpf_prog *prog)
 {
 	struct bpf_dev_offload *offload = prog->aux->offload;
 
-	offload->verifier_running = false;
-	wake_up(&offload->verifier_done);
-
 	rtnl_lock();
+	down_write(&bpf_devs_lock);
 	__bpf_prog_offload_destroy(prog);
+	up_write(&bpf_devs_lock);
 	rtnl_unlock();
 
 	kfree(offload);
@@ -114,14 +132,10 @@ void bpf_prog_offload_destroy(struct bpf_prog *prog)
 
 static int bpf_prog_offload_translate(struct bpf_prog *prog)
 {
-	struct bpf_dev_offload *offload = prog->aux->offload;
 	struct netdev_bpf data = {};
 	int ret;
 
 	data.offload.prog = prog;
-
-	offload->verifier_running = false;
-	wake_up(&offload->verifier_done);
 
 	rtnl_lock();
 	ret = __bpf_offload_ndo(prog, BPF_OFFLOAD_TRANSLATE, &data);
@@ -144,7 +158,7 @@ int bpf_prog_offload_compile(struct bpf_prog *prog)
 	return bpf_prog_offload_translate(prog);
 }
 
-const struct bpf_verifier_ops bpf_offload_prog_ops = {
+const struct bpf_prog_ops bpf_offload_prog_ops = {
 };
 
 static int bpf_offload_notification(struct notifier_block *notifier,
@@ -157,11 +171,17 @@ static int bpf_offload_notification(struct notifier_block *notifier,
 
 	switch (event) {
 	case NETDEV_UNREGISTER:
+		/* ignore namespace changes */
+		if (netdev->reg_state != NETREG_UNREGISTERING)
+			break;
+
+		down_write(&bpf_devs_lock);
 		list_for_each_entry_safe(offload, tmp, &bpf_prog_offload_devs,
 					 offloads) {
 			if (offload->netdev == netdev)
 				__bpf_prog_offload_destroy(offload->prog);
 		}
+		up_write(&bpf_devs_lock);
 		break;
 	default:
 		break;

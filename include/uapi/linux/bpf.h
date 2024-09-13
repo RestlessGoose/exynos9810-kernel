@@ -74,6 +74,11 @@ struct bpf_lpm_trie_key {
 	__u8	data[0];	/* Arbitrary size */
 };
 
+struct bpf_cgroup_storage_key {
+	__u64	cgroup_inode_id;	/* cgroup inode id */
+	__u32	attach_type;		/* program attach type */
+};
+
 /* BPF syscall commands, see bpf(2) man-page for details. */
 enum bpf_cmd {
 	BPF_MAP_CREATE,
@@ -93,7 +98,8 @@ enum bpf_cmd {
 	BPF_MAP_GET_FD_BY_ID,
 	BPF_OBJ_GET_INFO_BY_FD,
 	BPF_PROG_QUERY,
-	BPF_BTF_LOAD = 18,
+	BPF_RAW_TRACEPOINT_OPEN,
+	BPF_BTF_LOAD,
 };
 
 enum bpf_map_type {
@@ -113,6 +119,8 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_HASH_OF_MAPS,
 	BPF_MAP_TYPE_DEVMAP,
 	BPF_MAP_TYPE_SOCKMAP,
+	BPF_MAP_TYPE_CPUMAP,
+	BPF_MAP_TYPE_CGROUP_STORAGE = 19,
 };
 
 enum bpf_prog_type {
@@ -131,7 +139,11 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_LWT_XMIT,
 	BPF_PROG_TYPE_SOCK_OPS,
 	BPF_PROG_TYPE_SK_SKB,
-	BPF_PROG_TYPE_CGROUP_SOCK_ADDR = 18,
+	BPF_PROG_TYPE_CGROUP_DEVICE,
+	BPF_PROG_TYPE_SK_MSG,
+	BPF_PROG_TYPE_RAW_TRACEPOINT,
+	BPF_PROG_TYPE_CGROUP_SOCK_ADDR,
+	BPF_PROG_TYPE_CGROUP_SYSCTL = 23,
 };
 
 enum bpf_attach_type {
@@ -139,13 +151,21 @@ enum bpf_attach_type {
 	BPF_CGROUP_INET_EGRESS,
 	BPF_CGROUP_INET_SOCK_CREATE,
 	BPF_CGROUP_SOCK_OPS,
-	BPF_CGROUP_SMAP_INGRESS,
-	BPF_CGROUP_INET4_BIND = 8,
-	BPF_CGROUP_INET6_BIND = 9,
+	BPF_SK_SKB_STREAM_PARSER,
+	BPF_SK_SKB_STREAM_VERDICT,
+	BPF_CGROUP_DEVICE,
+	BPF_SK_MSG_VERDICT,
+	BPF_CGROUP_INET4_BIND,
+	BPF_CGROUP_INET6_BIND,
 	BPF_CGROUP_INET4_CONNECT,
 	BPF_CGROUP_INET6_CONNECT,
 	BPF_CGROUP_INET4_POST_BIND,
 	BPF_CGROUP_INET6_POST_BIND,
+	BPF_CGROUP_UDP4_SENDMSG,
+	BPF_CGROUP_UDP6_SENDMSG,
+	BPF_CGROUP_SYSCTL = 18,
+	BPF_CGROUP_UDP4_RECVMSG,
+	BPF_CGROUP_UDP6_RECVMSG,
 	__MAX_BPF_ATTACH_TYPE
 };
 
@@ -200,7 +220,13 @@ enum bpf_attach_type {
  */
 #define BPF_F_STRICT_ALIGNMENT	(1U << 0)
 
+/* when bpf_ldimm64->src_reg == BPF_PSEUDO_MAP_FD, bpf_ldimm64->imm == fd */
 #define BPF_PSEUDO_MAP_FD	1
+
+/* when bpf_call->src_reg == BPF_PSEUDO_CALL, bpf_call->imm == pc-relative
+ * offset to another bpf function
+ */
+#define BPF_PSEUDO_CALL		1
 
 /* flags for BPF_MAP_UPDATE_ELEM command */
 #define BPF_ANY		0 /* create new element or update existing */
@@ -284,7 +310,6 @@ union bpf_attr {
 		__u32		attach_bpf_fd;	/* eBPF program to attach */
 		__u32		attach_type;
 		__u32		attach_flags;
-		__u32		attach_bpf_fd2;
 	};
 
 	struct { /* anonymous struct used by BPF_PROG_TEST_RUN command */
@@ -322,6 +347,11 @@ union bpf_attr {
 		__aligned_u64	prog_ids;
 		__u32		prog_cnt;
 	} query;
+
+	struct {
+		__u64 name;
+		__u32 prog_fd;
+	} raw_tracepoint;
 
 	struct { /* anonymous struct for BPF_BTF_LOAD */
 		__aligned_u64	btf;
@@ -647,16 +677,13 @@ union bpf_attr {
  *     @map: pointer to sockmap
  *     @key: key to lookup sock in map
  *     @flags: reserved for future use
- *     Return: SK_REDIRECT
+ *     Return: SK_PASS
  *
- * int bpf_sock_map_update(skops, map, key, flags, map_flags)
+ * int bpf_sock_map_update(skops, map, key, flags)
  *	@skops: pointer to bpf_sock_ops
  *	@map: pointer to sockmap to update
  *	@key: key to insert/update sock in map
  *	@flags: same flags as map update elem
- *	@map_flags: sock map specific flags
- *	   bit 1: Enable strparser
- *	   other bits: reserved
  *
  * int skb_load_bytes_relative(const struct sk_buff *skb, u32 offset, void *to, u32 len, u32 start_header)
  * 	Description
@@ -681,6 +708,19 @@ union bpf_attr {
  * 	Return
  * 		0 on success, or a negative error in case of failure.
  *
+ * int bpf_xdp_adjust_meta(xdp_md, delta)
+ *     Adjust the xdp_md.data_meta by delta
+ *     @xdp_md: pointer to xdp_md
+ *     @delta: An positive/negative integer to be added to xdp_md.data_meta
+ *     Return: 0 on success or negative on error
+ *
+ * int bpf_msg_redirect_map(map, key, flags)
+ *     Redirect msg to a sock in map using key as a lookup key for the
+ *     sock in map.
+ *     @map: pointer to sockmap
+ *     @key: key to lookup sock in map
+ *     @flags: reserved for future use
+ *     Return: SK_PASS
  * int bpf_bind(ctx, addr, addr_len)
  *     Bind socket to address. Only binding to IP is supported, no port can be
  *     set in addr.
@@ -688,6 +728,7 @@ union bpf_attr {
  *     @addr: pointer to struct sockaddr to bind socket to
  *     @addr_len: length of sockaddr structure
  *     Return: 0 on success or negative error code
+ *
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -897,6 +938,18 @@ struct __sk_buff {
 	__u32 data;
 	__u32 data_end;
 	__u32 napi_id;
+
+	/* Accessed by BPF_PROG_TYPE_sk_skb types from here to ... */
+	__u32 family;
+	__u32 remote_ip4;	/* Stored in network byte order */
+	__u32 local_ip4;	/* Stored in network byte order */
+	__u32 remote_ip6[4];	/* Stored in network byte order */
+	__u32 local_ip6[4];	/* Stored in network byte order */
+	__u32 remote_port;	/* Stored in network byte order */
+	__u32 local_port;	/* stored in host byte order */
+	/* ... here. */
+
+	__u32 data_meta;
 };
 
 struct bpf_tunnel_key {
@@ -966,12 +1019,20 @@ enum xdp_action {
 struct xdp_md {
 	__u32 data;
 	__u32 data_end;
+	__u32 data_meta;
 };
 
 enum sk_action {
-	SK_ABORTED = 0,
-	SK_DROP,
-	SK_REDIRECT,
+	SK_DROP = 0,
+	SK_PASS,
+};
+
+/* user accessible metadata for SK_MSG packet hook, new fields must
+ * be added to the end of this structure
+ */
+struct sk_msg_md {
+	void *data;
+	void *data_end;
 };
 
 #define BPF_TAG_SIZE	8
@@ -1019,6 +1080,12 @@ struct bpf_sock_addr {
 	__u32 family;		/* Allows 4-byte read, but no write */
 	__u32 type;		/* Allows 4-byte read, but no write */
 	__u32 protocol;		/* Allows 4-byte read, but no write */
+	__u32 msg_src_ip4;	/* Allows 1,2,4-byte read an 4-byte write.
+				 * Stored in network byte order.
+				 */
+	__u32 msg_src_ip6[4];	/* Allows 1,2,4-byte read an 4-byte write.
+				 * Stored in network byte order.
+				 */
 };
 
 /* User bpf_sock_ops struct to access socket values and specify request ops
@@ -1047,6 +1114,30 @@ struct bpf_sock_ops {
  */
 enum {
 	BPF_SOCK_OPS_VOID,
+};
+
+#define BPF_DEVCG_ACC_MKNOD	(1ULL << 0)
+#define BPF_DEVCG_ACC_READ	(1ULL << 1)
+#define BPF_DEVCG_ACC_WRITE	(1ULL << 2)
+
+#define BPF_DEVCG_DEV_BLOCK	(1ULL << 0)
+#define BPF_DEVCG_DEV_CHAR	(1ULL << 1)
+
+struct bpf_cgroup_dev_ctx {
+	/* access_type encoded as (BPF_DEVCG_ACC_* << 16) | BPF_DEVCG_DEV_* */
+	__u32 access_type;
+	__u32 major;
+	__u32 minor;
+};
+
+struct bpf_raw_tracepoint_args {
+	__u64 args[0];
+};
+
+struct bpf_sysctl {
+	__u32	write;		/* Sysctl is being read (= 0) or written (= 1).
+				 * Allows 1,2,4-byte read, but no write.
+				 */
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */

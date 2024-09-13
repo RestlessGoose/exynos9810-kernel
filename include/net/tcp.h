@@ -486,6 +486,8 @@ int tcp_sendpage(struct sock *sk, struct page *page, int offset, size_t size,
 		 int flags);
 int tcp_sendpage_locked(struct sock *sk, struct page *page, int offset,
 			size_t size, int flags);
+ssize_t do_tcp_sendpages(struct sock *sk, struct page *page, int offset,
+		 size_t size, int flags);
 void tcp_release_cb(struct sock *sk);
 void tcp_wfree(struct sk_buff *skb);
 void tcp_write_timer_handler(struct sock *sk);
@@ -979,6 +981,12 @@ struct tcp_skb_cb {
 			struct inet6_skb_parm	h6;
 #endif
 		} header;	/* For incoming skbs */
+		struct {
+			__u32 key;
+			__u32 flags;
+			struct bpf_map *map;
+			void *data_end;
+		} bpf;
 	};
 };
 
@@ -2280,5 +2288,38 @@ static inline int tcp_call_bpf(struct sock *sk, int op)
 	return -EPERM;
 }
 #endif
+
+/*
+ * Interface for adding Upper Level Protocols over TCP
+ */
+
+#define TCP_ULP_NAME_MAX	16
+#define TCP_ULP_MAX		128
+#define TCP_ULP_BUF_MAX		(TCP_ULP_NAME_MAX*TCP_ULP_MAX)
+
+enum {
+	TCP_ULP_TLS,
+	TCP_ULP_BPF,
+};
+
+struct tcp_ulp_ops {
+	struct list_head	list;
+
+	/* initialize ulp */
+	int (*init)(struct sock *sk);
+	/* cleanup ulp */
+	void (*release)(struct sock *sk);
+
+	int		uid;
+	char		name[TCP_ULP_NAME_MAX];
+	bool		user_visible;
+	struct module	*owner;
+};
+int tcp_register_ulp(struct tcp_ulp_ops *type);
+void tcp_unregister_ulp(struct tcp_ulp_ops *type);
+int tcp_set_ulp(struct sock *sk, const char *name);
+int tcp_set_ulp_id(struct sock *sk, const int ulp);
+void tcp_get_available_ulp(char *buf, size_t len);
+void tcp_cleanup_ulp(struct sock *sk);
 
 #endif	/* _TCP_H */

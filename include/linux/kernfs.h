@@ -96,6 +96,14 @@ struct kernfs_elem_attr {
 	struct kernfs_node	*notify_next;	/* for kernfs_notify() */
 };
 
+/* represent a kernfs node */
+union kernfs_node_id {
+	struct {
+		u32		ino;
+	};
+	u64			id;
+};
+
 /*
  * kernfs_node - the building block of kernfs hierarchy.  Each and every
  * kernfs node is represented by single kernfs_node.  Most fields are
@@ -132,9 +140,9 @@ struct kernfs_node {
 
 	void			*priv;
 
+	union kernfs_node_id	id;
 	unsigned short		flags;
 	umode_t			mode;
-	unsigned int		ino;
 	struct kernfs_iattrs	*iattr;
 };
 

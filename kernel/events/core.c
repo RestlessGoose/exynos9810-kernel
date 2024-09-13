@@ -4725,6 +4725,9 @@ static long _perf_ioctl(struct perf_event *event, unsigned int cmd, unsigned lon
 	case PERF_EVENT_IOC_SET_BPF:
 		return perf_event_set_bpf_prog(event, arg);
 
+	case PERF_EVENT_IOC_QUERY_BPF:
+		return perf_event_query_prog_array(event, (void __user *)arg);
+
 	case PERF_EVENT_IOC_PAUSE_OUTPUT: {
 		struct ring_buffer *rb;
 
