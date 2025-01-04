@@ -308,7 +308,6 @@ int tcp_write_timeout(struct sock *sk)
 		expired = retransmits_timed_out(sk, retry_until,
 						icsk->icsk_user_timeout);
 	}
-
 	if (expired) {
 		/* Has it gone just too far? */
 		tcp_write_err(sk);
