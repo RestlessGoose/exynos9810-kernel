@@ -224,12 +224,7 @@ static struct sock *tcp_fastopen_create_child(struct sock *sk,
 
 #ifndef CONFIG_MPTCP
 	/* Now finish processing the fastopen child socket. */
-	inet_csk(child)->icsk_af_ops->rebuild_header(child);
-	tcp_init_congestion_control(child);
-	tcp_mtup_init(child);
-	tcp_init_metrics(child);
-	tcp_call_bpf(child, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB);
-	tcp_init_buffer_space(child);
+	tcp_init_transfer(child, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB);
 #endif
 
 	tp->rcv_nxt = TCP_SKB_CB(skb)->seq + 1;
