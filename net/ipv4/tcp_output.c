@@ -3509,9 +3509,8 @@ static void tcp_connect_init(struct sock *sk)
 				       &rcv_wscale,
 				       dst_metric(dst, RTAX_INITRWND), sk);
 #else
-	tcp_select_initial_window(sock_net(sk), tcp_full_space(sk),
-				  tp->advmss - (tp->rx_opt.ts_recent_stamp ? tp->tcp_header_len - sizeof(struct tcphdr) : 0),
-				  &tp->rcv_wnd,
+	tcp_select_initial_window(tcp_full_space(sk),
+				  tp->advmss - (tp->rx_opt.ts_recent_stamp ? tp->tcp_header_len - sizeof(struct tcphdr) : 0),				  &tp->rcv_wnd,
 				  &tp->window_clamp,
 				  sysctl_tcp_window_scaling,
 				  &rcv_wscale,
