@@ -37,7 +37,7 @@ static int last_max_limit = -1;
 static int sse_mode;
 
 static ssize_t show_cpufreq_table(struct kobject *kobj,
-				struct attribute *attr, char *buf)
+								  struct attribute *attr, char *buf)
 {
 	struct list_head *domains = get_domain_list();
 	struct exynos_cpufreq_domain *domain;
@@ -50,14 +50,14 @@ static ssize_t show_cpufreq_table(struct kobject *kobj,
 
 			if (freq == CPUFREQ_ENTRY_INVALID)
 				continue;
-#ifdef CONFIG_SEC_PM
+			#ifdef CONFIG_SEC_PM
 			if (domain == last_domain() && domain->max_usable_freq)
 				if (freq > domain->max_usable_freq)
 					continue;
-#endif
+			#endif
 
 			count += snprintf(&buf[count], 10, "%d ",
-					freq >> (scale * SCALE_SIZE));
+							  freq >> (scale * SCALE_SIZE));
 		}
 
 		scale++;
@@ -69,7 +69,7 @@ static ssize_t show_cpufreq_table(struct kobject *kobj,
 }
 
 static ssize_t show_cpufreq_min_limit(struct kobject *kobj,
-				struct attribute *attr, char *buf)
+									  struct attribute *attr, char *buf)
 {
 	struct list_head *domains = get_domain_list();
 	struct exynos_cpufreq_domain *domain;
@@ -102,7 +102,7 @@ static ssize_t show_cpufreq_min_limit(struct kobject *kobj,
 	 * frequency of last domain
 	 */
 	return snprintf(buf, 10, "%u\n",
-		first_domain()->min_freq >> (scale * SCALE_SIZE));
+					first_domain()->min_freq >> (scale * SCALE_SIZE));
 }
 
 static struct ucc_req ucc_req =
@@ -110,29 +110,28 @@ static struct ucc_req ucc_req =
 	.name = "ufc",
 };
 static int ucc_requested;
-static int ucc_requested_val = 0;
 static bool boosted;
 
-static inline void control_boost(int ucc_index, bool enable)
+static inline void control_boost(bool enable)
 {
 	if (boosted && !enable) {
 		request_kernel_prefer_perf(STUNE_TOPAPP, 0);
 		request_kernel_prefer_perf(STUNE_FOREGROUND, 0);
-		ucc_requested_val = 0;
-		ucc_update_request(&ucc_req, ucc_requested_val);
+
+
 		boosted = false;
 	} else if (!boosted && enable) {
 		request_kernel_prefer_perf(STUNE_TOPAPP, 1);
 		request_kernel_prefer_perf(STUNE_FOREGROUND, 1);
-		ucc_requested_val = ucc_index;
-		ucc_update_request(&ucc_req, ucc_requested_val);
+
+
 		boosted = true;
 	}
 }
 
 static ssize_t store_cpufreq_min_limit(struct kobject *kobj,
-				struct attribute *attr, const char *buf,
-				size_t count)
+									   struct attribute *attr, const char *buf,
+									   size_t count)
 {
 	struct list_head *domains = get_domain_list();
 	struct exynos_cpufreq_domain *domain;
@@ -198,7 +197,7 @@ static ssize_t store_cpufreq_min_limit(struct kobject *kobj,
 		/* Clear all constraint by cpufreq_min_limit */
 		if (input < 0) {
 			pm_qos_update_request(&domain->user_min_qos_req, 0);
-			control_boost(domain->ucc_index, 0);
+			control_boost(0);
 			continue;
 		}
 
@@ -229,7 +228,7 @@ static ssize_t store_cpufreq_min_limit(struct kobject *kobj,
 		freq = min(freq, domain->max_freq);
 		pm_qos_update_request(&domain->user_min_qos_req, freq);
 
-		control_boost(domain->ucc_index, 1);
+		control_boost(1);
 
 		set_max = true;
 	}
@@ -238,8 +237,8 @@ static ssize_t store_cpufreq_min_limit(struct kobject *kobj,
 }
 
 static ssize_t store_cpufreq_min_limit_wo_boost(struct kobject *kobj,
-				struct attribute *attr, const char *buf,
-				size_t count)
+												struct attribute *attr, const char *buf,
+												size_t count)
 {
 	struct list_head *domains = get_domain_list();
 	struct exynos_cpufreq_domain *domain;
@@ -343,7 +342,7 @@ static ssize_t store_cpufreq_min_limit_wo_boost(struct kobject *kobj,
 }
 
 static ssize_t show_cpufreq_max_limit(struct kobject *kobj,
-				struct attribute *attr, char *buf)
+									  struct attribute *attr, char *buf)
 {
 	struct list_head *domains = get_domain_list();
 	struct exynos_cpufreq_domain *domain;
@@ -362,12 +361,12 @@ static ssize_t show_cpufreq_max_limit(struct kobject *kobj,
 		pm_qos_max = pm_qos_request(domain->pm_qos_max_class);
 		if (pm_qos_max > 0) {
 			pm_qos_max = min(pm_qos_max, domain->max_freq);
-#ifdef CONFIG_SEC_PM
+			#ifdef CONFIG_SEC_PM
 			if (domain == last_domain() && domain->max_usable_freq)
 				pm_qos_max = min(pm_qos_max,
-						domain->max_usable_freq);
-#endif
-			pm_qos_max = max(pm_qos_max, domain->min_freq);
+								 domain->max_usable_freq);
+				#endif
+				pm_qos_max = max(pm_qos_max, domain->min_freq);
 
 			/*
 			 * To manage frequencies of all domains at once,
@@ -386,7 +385,7 @@ static ssize_t show_cpufreq_max_limit(struct kobject *kobj,
 	 * frequency of last domain
 	 */
 	return snprintf(buf, 10, "%u\n",
-		first_domain()->min_freq >> (scale * SCALE_SIZE));
+					first_domain()->min_freq >> (scale * SCALE_SIZE));
 }
 
 struct pm_qos_request cpu_online_max_qos_req;
@@ -450,14 +449,14 @@ static void cpufreq_max_limit_update(int input_freq)
 		if (set_limit) {
 			req_limit_freq = max(req_limit_freq, domain->min_freq);
 			pm_qos_update_request(&domain->user_max_qos_req,
-					req_limit_freq);
+								  req_limit_freq);
 			set_limit = false;
 			continue;
 		}
 
 		if (set_max) {
 			pm_qos_update_request(&domain->user_max_qos_req,
-					domain->max_freq);
+								  domain->max_freq);
 			continue;
 		}
 
@@ -465,7 +464,7 @@ static void cpufreq_max_limit_update(int input_freq)
 		if (input_freq < 0) {
 			enable_domain_cpus(domain);
 			pm_qos_update_request(&domain->user_max_qos_req,
-						domain->max_freq);
+								  domain->max_freq);
 			continue;
 		}
 
@@ -505,7 +504,7 @@ static void cpufreq_max_limit_update(int input_freq)
 }
 
 static ssize_t store_cpufreq_max_limit(struct kobject *kobj, struct attribute *attr,
-					const char *buf, size_t count)
+									   const char *buf, size_t count)
 {
 	int input;
 
@@ -519,13 +518,13 @@ static ssize_t store_cpufreq_max_limit(struct kobject *kobj, struct attribute *a
 }
 
 static ssize_t show_execution_mode_change(struct kobject *kobj,
-				struct attribute *attr, char *buf)
+										  struct attribute *attr, char *buf)
 {
 	return snprintf(buf, 10, "%d\n",sse_mode);
 }
 
 static ssize_t store_execution_mode_change(struct kobject *kobj, struct attribute *attr,
-					const char *buf, size_t count)
+										   const char *buf, size_t count)
 {
 	int input;
 	int prev_mode;
@@ -544,54 +543,24 @@ static ssize_t store_execution_mode_change(struct kobject *kobj, struct attribut
 	return count;
 }
 
-static ssize_t show_cstate_control(struct kobject *kobj,
-				struct kobj_attribute *attr, char *buf)
-{
-    return snprintf(buf, 10, "%d\n", ucc_requested);
-}
 
-static ssize_t store_cstate_control(struct kobject *kobj, struct kobj_attribute *attr,
-					const char *buf, size_t count)
-{
-	int input;
-	if (!sscanf(buf, "%8d", &input))
-		return -EINVAL;
 
-	if (input < 0)
-		return -EINVAL;
-
-	input = !!input;
-
-	if (input == ucc_requested)
-		goto out;
-
-	ucc_requested = input;
-
-	if (ucc_requested)
-		ucc_add_request(&ucc_req, ucc_requested_val);
-	else
-		ucc_remove_request(&ucc_req);
-
-out:
-	return count;
-}
 
 static struct global_attr cpufreq_table =
 __ATTR(cpufreq_table, 0444 , show_cpufreq_table, NULL);
 static struct global_attr cpufreq_min_limit =
 __ATTR(cpufreq_min_limit, 0644,
-		show_cpufreq_min_limit, store_cpufreq_min_limit);
+	   show_cpufreq_min_limit, store_cpufreq_min_limit);
 static struct global_attr cpufreq_min_limit_wo_boost =
 __ATTR(cpufreq_min_limit_wo_boost, 0644,
-		show_cpufreq_min_limit, store_cpufreq_min_limit_wo_boost);
+	   show_cpufreq_min_limit, store_cpufreq_min_limit_wo_boost);
 static struct global_attr cpufreq_max_limit =
 __ATTR(cpufreq_max_limit, 0644,
-		show_cpufreq_max_limit, store_cpufreq_max_limit);
+	   show_cpufreq_max_limit, store_cpufreq_max_limit);
 static struct global_attr execution_mode_change =
 __ATTR(execution_mode_change, 0644,
-		show_execution_mode_change, store_execution_mode_change);
-static struct kobj_attribute cstate_control =
-__ATTR(cstate_control, 0644, show_cstate_control, store_cstate_control);
+	   show_execution_mode_change, store_execution_mode_change);
+
 
 static __init void init_sysfs(void)
 {
@@ -609,32 +578,28 @@ static __init void init_sysfs(void)
 
 	if (sysfs_create_file(power_kobj, &execution_mode_change.attr))
 		pr_err("failed to create cpufreq_max_limit node\n");
-	if (sysfs_create_file(power_kobj, &cstate_control.attr))
-		pr_err("failed to create cstate_control node\n");
 
 }
 
 static int parse_ufc_ctrl_info(struct exynos_cpufreq_domain *domain,
-					struct device_node *dn)
+							   struct device_node *dn)
 {
 	unsigned int val;
 
 	if (!of_property_read_u32(dn, "user-default-qos", &val))
 		domain->user_default_qos = val;
 
-	if (!of_property_read_u32(dn, "ucc-index", &val))
-		domain->ucc_index = val;
 	return 0;
 }
 
 static __init void init_pm_qos(struct exynos_cpufreq_domain *domain)
 {
 	pm_qos_add_request(&domain->user_min_qos_req,
-			domain->pm_qos_min_class, domain->min_freq);
+					   domain->pm_qos_min_class, domain->min_freq);
 	pm_qos_add_request(&domain->user_max_qos_req,
-			domain->pm_qos_max_class, domain->max_freq);
+					   domain->pm_qos_max_class, domain->max_freq);
 	pm_qos_add_request(&domain->user_min_qos_wo_boost_req,
-			domain->pm_qos_min_class, domain->min_freq);
+					   domain->pm_qos_min_class, domain->min_freq);
 }
 
 int ufc_domain_init(struct exynos_cpufreq_domain *domain)
@@ -662,7 +627,7 @@ int ufc_domain_init(struct exynos_cpufreq_domain *domain)
 			return -ENOMEM;
 
 		ufc->info.freq_table = kzalloc(sizeof(struct exynos_ufc_freq)
-				* domain->table_size, GFP_KERNEL);
+		* domain->table_size, GFP_KERNEL);
 
 		if (!ufc->info.freq_table) {
 			kfree(ufc);
@@ -676,7 +641,7 @@ int ufc_domain_init(struct exynos_cpufreq_domain *domain)
 }
 
 static int __init init_ufc_table_dt(struct exynos_cpufreq_domain *domain,
-					struct device_node *dn)
+									struct device_node *dn)
 {
 	struct device_node *child;
 	struct exynos_ufc_freq *table;
@@ -728,7 +693,7 @@ static int __init init_ufc_table_dt(struct exynos_cpufreq_domain *domain,
 			}
 			pr_info("Master_freq : %u kHz - limit_freq : %u kHz\n",
 					ufc->info.freq_table[index].master_freq,
-					ufc->info.freq_table[index].limit_freq);
+		   ufc->info.freq_table[index].limit_freq);
 		}
 		kfree(table);
 	}
@@ -744,7 +709,7 @@ static int __init exynos_ufc_init(void)
 	int ret = 0;
 
 	pm_qos_add_request(&cpu_online_max_qos_req, PM_QOS_CPU_ONLINE_MAX,
-					PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE);
+					   PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE);
 
 	while((dn = of_find_node_by_type(dn, "cpufreq-userctrl"))) {
 		struct cpumask shared_mask;
@@ -783,7 +748,7 @@ static int __init exynos_ufc_init(void)
 	init_sysfs();
 
 	pr_info("Initialized Exynos UFC(User-Frequency-Ctrl) driver\n");
-exit:
+	exit:
 	return 0;
 }
 late_initcall(exynos_ufc_init);

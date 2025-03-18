@@ -46,9 +46,10 @@ struct exynos_cpufreq_domain {
 
 	unsigned int			max_freq;
 	unsigned int			min_freq;
-#ifdef CONFIG_SEC_PM
+	#ifdef CONFIG_SEC_PM
 	unsigned int			max_usable_freq;
-#endif
+	unsigned int			min_usable_freq;
+	#endif
 	unsigned int			boot_freq;
 	unsigned int			resume_freq;
 	unsigned int			old;
@@ -66,7 +67,6 @@ struct exynos_cpufreq_domain {
 
 	/* for sysfs */
 	unsigned int			user_default_qos;
-	int				ucc_index;
 
 	/* freq boost */
 	bool				boost_supported;
@@ -84,7 +84,7 @@ struct exynos_cpufreq_domain {
  * list head of cpufreq domain
  */
 extern struct exynos_cpufreq_domain
-		*find_domain_cpumask(const struct cpumask *mask);
+*find_domain_cpumask(const struct cpumask *mask);
 extern struct list_head *get_domain_list(void);
 extern struct exynos_cpufreq_domain *first_domain(void);
 extern struct exynos_cpufreq_domain *last_domain(void);
