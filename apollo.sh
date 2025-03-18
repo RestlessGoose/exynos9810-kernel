@@ -40,8 +40,8 @@ CR_DTB=$CR_DIR/arch/$CR_ARCH/boot/dtb.img
 # defconfig dir
 CR_DEFCONFIG=$CR_DIR/arch/$CR_ARCH/configs
 # Kernel Name and Version
-CR_VERSION=V1.8
-CR_NAME=DS-ACK
+CR_VERSION=v1.0
+CR_NAME=CrownTrail-Kernel
 # Thread count
 CR_JOBS=$(nproc --all)
 # Target Android version
