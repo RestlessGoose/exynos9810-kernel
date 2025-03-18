@@ -10763,9 +10763,9 @@
 		ldsum_enabled = <0x0>;
 		skip_lit_enabled = <0x0>;
 		cl_busy_ratio = <0x41>;
-		dual_freq = <0x234f10>;
-		triple_freq = <0x1d5ba0>;
-		quad_freq = <0x1d5ba0>;
+		dual_freq = <1924000>;
+		triple_freq = <1924000>;
+		quad_freq = <1924000>;
 		cal-id = <0xb040003>;
 	};
 
@@ -10821,13 +10821,39 @@
 			min-limit {
 				ctrl-type = <0x0>;
 				execution-mode = <0x0>;
-				table = <0x2d3a20 0x1b5fd0 0x2ba3e0 0x1b5fd0 0x294280 0x1b5fd0 0x287760 0x1b5fd0 0x261600 0x1b5fd0 0x234f10 0x1b5fd0 0x20edb0 0x1b5fd0 0x1e8c50 0x1b5fd0 0x1d5ba0 0x1b5fd0 0x1b5fd0 0x1b5fd0 0x19c990 0xae8f8 0x183350 0xae8f8 0x166a48 0xae8f8 0x133dc8 0xae8f8 0x11da50 0xae8f8 0x104410 0xae8f8 0xeadd0 0xae8f8 0xd1790 0xae8f8 0xb4e88 0xae8f8 0x9eb10 0xae8f8 0x91ff0 0xae8f8>;
+				table = <
+					  1924000  1950000
+					  1794000  1950000
+					  1690000  1794000
+					  1586000  1690000
+					  1469000  1456000
+					  1261000  1053000
+					  1170000  949000
+					  1066000  832000
+					   962000  715000
+					   858000  598000
+					   741000  455000
+					   650000  299000
+					   598000  208000 >;
 			};
 
 			max-limit {
 				ctrl-type = <0x2>;
 				execution-mode = <0x0>;
-				table = <0x2d3a20 0x1b5fd0 0x2ba3e0 0x1b5fd0 0x294280 0x1b5fd0 0x287760 0x1b5fd0 0x261600 0x1b5fd0 0x234f10 0x1b5fd0 0x20edb0 0x1b5fd0 0x1e8c50 0x1b5fd0 0x1d5ba0 0x1b5fd0 0x1b5fd0 0x1b5fd0 0x19c990 0x1b5fd0 0x183350 0x1b5fd0 0x166a48 0x1b5fd0 0x133dc8 0x1b5fd0 0x11da50 0x1b5fd0 0x104410 0x1b5fd0 0xeadd0 0x1b5fd0 0xd1790 0x1b5fd0 0xb4e88 0x1b5fd0 0x9eb10 0x1b5fd0 0x91ff0 0x1b5fd0>;
+				table = <
+					  1924000 1950000
+					  1794000 1794000
+					  1690000 1794000
+					  1586000 1794000
+					  1469000 1794000
+					  1261000 1794000
+					  1170000 1794000
+					  1066000 1794000
+					   962000 1794000
+					   858000 1794000
+					   741000 1794000
+					   650000 1794000
+					   598000 1794000 >;
 			};
 		};
 	};
@@ -10839,7 +10865,8 @@
 			sibling-cpus = "0-3";
 			cal-id = <0xb040002>;
 			dm-type = <0x0>;
-			min-freq = <0x6f158>;
+			min-freq = <208000>;
+			max-freq = <1950000>;
 			pm_qos-min-class = <0x3>;
 			pm_qos-max-class = <0x4>;
 			#cooling-cells = <0x2>;
@@ -10851,7 +10878,21 @@
 				mif-perf {
 					const-type = <0x0>;
 					dm-type = <0x2>;
-					table = <0x1dc130 0xce4c8 0x1b5fd0 0xce4c8 0x19c990 0xce4c8 0x163780 0xa50a0 0x130b00 0xa50a0 0x101148 0xa50a0 0xe7b08 0xa50a0 0xcb200 0x854d0 0xae8f8 0x854d0 0x91ff0 0x66c88 0x6f158 0x0>;
+					table = <
+						  1950000  1014000
+						  1794000  845000
+						  1690000  845000
+						  1456000  676000
+						  1248000  676000
+						  1053000  676000
+						   949000  676000
+						   832000  546000
+						   715000  546000
+						   598000  421000
+						   455000  421000
+						   299000  421000
+						   208000  421000
+						   >;
 				};
 
 				mif-skew {
@@ -10868,9 +10909,9 @@
 			sibling-cpus = "4-7";
 			cal-id = <0xb040003>;
 			dm-type = <0x1>;
-			min-freq = <0x9eb10>;
-			max-freq = <0x1d5ba0>;
-			policy-max = <0x1d5ba0>;
+			min-freq = <598000>;
+			max-freq = <1924000>;
+			policy-max = <1924000>;
 			pm_qos-min-class = <0x5>;
 			pm_qos-max-class = <0x6>;
 			pm_qos-booting = <0x1d5ba0>;
@@ -10883,7 +10924,20 @@
 				mif-perf {
 					const-type = <0x0>;
 					dm-type = <0x2>;
-					table = <0x2c0970 0x1b5fd0 0x2ba3e0 0x1b5fd0 0x294280 0x1b5fd0 0x287760 0x1b5fd0 0x261600 0x1b5fd0 0x234f10 0x1b5fd0 0x202290 0x1b5fd0 0x1e8c50 0x1b5fd0 0x1d5ba0 0x1b5fd0 0x1b5fd0 0x1b5fd0 0x19c990 0x177bb8 0x183350 0xf78f0 0x166a48 0xce4c8 0x133dc8 0xa50a0 0x11da50 0xa50a0 0x104410 0xa50a0 0xeadd0 0x854d0 0xd1790 0x854d0 0xb4e88 0x66c88 0x9eb10 0x66c88 0x91ff0 0x66c88>;
+					table = <
+						  1924000 1794000
+						  1794000 1794000
+						  1690000 1539000
+						  1586000 1014000
+						  1469000  845000
+						  1261000  676000
+						  1170000  676000
+						  1066000  676000
+						   962000  546000
+						   858000  546000
+						   741000  421000
+						   650000  421000
+						   598000  421000 >;
 				};
 
 				mif-skew {
@@ -10904,7 +10958,7 @@
 		id = <0x0>;
 		sensors = <0x5e>;
 		sensing_mode = "balance";
-		hotplug_enable = <0x1>;
+		hotplug_enable = <0x0>;
 		hotplug_in_threshold = <0x5b>;
 		hotplug_out_threshold = <0x60>;
 		#thermal-sensor-cells = <0x0>;
@@ -13832,20 +13886,20 @@
 			cl0 {
 				qos,label = "LIT";
 				qos,delay_time = <0x9>;
-				qos,table_size = <0xa>;
-				qos,table = <0x1b5fd0 0x19c990 0x163780 0x130b00 0x101148 0xe7b08 0xcb200 0xae8f8 0x91ff0 0x6f158>;
+				qos,table_size = <0xb>;
+				qos,table = <1950000 0x1b5fd0 0x19c990 0x163780 0x130b00 0x101148 0xe7b08 0xcb200 0xae8f8 0x91ff0 0x6f158>;
 			};
 
 			cl1 {
 				qos,label = "BIG";
 				qos,delay_time = <0x8>;
 				qos,big_turbo_enable = <0x7>;
-				qos,s_table_size = <0x12>;
-				qos,s_table = <0x294280 0x287760 0x261600 0x234f10 0x202290 0x1e8c50 0x1d5ba0 0x1b5fd0 0x19c990 0x183350 0x166a48 0x133dc8 0x11da50 0x104410 0xeadd0 0xd1790 0xb4e88 0x9eb10>;
-				qos,d_table_size = <0xf>;
-				qos,d_table = <0x234f10 0x202290 0x1e8c50 0x1d5ba0 0x1b5fd0 0x19c990 0x183350 0x166a48 0x133dc8 0x11da50 0x104410 0xeadd0 0xd1790 0xb4e88 0x9eb10>;
-				qos,q_table_size = <0xb>;
-				qos,q_table = <0x1b5fd0 0x19c990 0x183350 0x166a48 0x133dc8 0x11da50 0x104410 0xeadd0 0xd1790 0xb4e88 0x9eb10>;
+				qos,s_table_size=<13>;
+				qos,s_table=<1924000 1794000 1690000 1586000 1469000 1261000 1170000 1066000 962000 858000 741000 650000 598000>;
+				qos,d_table_size=<13>;
+				qos,d_table=<1924000 1794000 1690000 1586000 1469000 1261000 1170000 1066000 962000 858000 741000 650000 598000>;
+				qos,q_table_size=<13>;
+				qos,q_table=<1924000 1794000 1690000 1586000 1469000 1261000 1170000 1066000 962000 858000 741000 650000 598000>;
 			};
 
 			mif {

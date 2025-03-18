@@ -1975,7 +1975,7 @@ struct request_queue *blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 		goto err_exit;
 
 	/* init q->mq_kobj and sw queues' kobjects */
-	blk_mq_sysfs_init(q);
+	//blk_mq_sysfs_init(q);
 
 	q->queue_hw_ctx = kzalloc_node(nr_cpu_ids * sizeof(*(q->queue_hw_ctx)),
 						GFP_KERNEL, set->numa_node);
