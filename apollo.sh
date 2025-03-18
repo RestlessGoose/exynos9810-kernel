@@ -75,12 +75,14 @@ CR_CONFIG_KOR=kor_defconfig
 CR_SELINUX="2"
 CR_KSU="n"
 CR_CLEAN="n"
+CR_SPOOF4BPF="1"
 # Default Compilation
 DEFAULT_TARGET=3   # crownlte
 DEFAULT_COMPILER=3 # clang18
 DEFAULT_SELINUX=2  # enforce
 DEFAULT_KSU=y      # enabled
 DEFAULT_CLEAN=n    # dirty
+DEFAULT_SPOOF4BPF=1 #enabled
 #####################################################
 
 # Compiler Selection
@@ -440,6 +442,17 @@ PACK_BOOT_IMG()
 # Single Target Build Function
 BUILD()
 {
+
+	if [ "$CR_SPOOF4BPF" = "1" ]; then
+		echo " Spoofing kernel version to 4.19.236 for BPF"
+		sed -i 's/strcpy(tmp.release, \"4.9.337\");/strcpy(tmp.release, \"4.19.236\");/g' kernel/sys.c
+	fi
+
+	if [ "$CR_SPOOF4BPF" = "2" ]; then
+		echo " Reversing kernel version spoof to 4.9.337 for BPF"
+		sed -i 's/strcpy(tmp.release, \"4.19.236\");/strcpy(tmp.release, \"4.9.337\");/g' kernel/sys.c
+	fi
+
 	if [ "$CR_TARGET" = "1" ]; then
 		echo " Galaxy S9 INTL"
 		CR_CONFIG_SPLIT=$CR_CONFIG_G960
@@ -671,6 +684,10 @@ echo "1) SELinux Permissive "  "2) SELinux Enforcing"
 echo " "
 read -p "Please select your SElinux mode (1-2) > " CR_SELINUX
 echo " "
+echo "1) 4.19.236 BPF spoof "  "2) No kernel ver spoof"
+echo " "
+read -p "Please select spoof for BPF (1-2) > " CR_SPOOF4BPF
+echo " "
 read -p "Enable KernelSU? (y/n) > " CR_KSU
 echo " "
 if [ "$CR_TARGET" = "8" ]; then
@@ -693,6 +710,10 @@ fi
 
 if ! [[ "$CR_SELINUX" =~ ^[1-2]$ ]]; then
     CR_SELINUX=$DEFAULT_SELINUX
+fi
+
+if ! [[ "$CR_SPOOF4BPF" =~ ^[1-2]$ ]]; then
+    CR_SPOOF4BPF=$DEFAULT_SPOOF4BPF
 fi
 
 if ! [[ "$CR_KSU" =~ ^[yYnN]$ ]]; then
