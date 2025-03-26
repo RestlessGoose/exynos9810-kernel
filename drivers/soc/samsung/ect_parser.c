@@ -910,10 +910,12 @@ static int ect_parse_gen_param_table(int parser_version, void *address, struct e
 		} else if (ect_strcmp(size->table_name, "MINMAX_dvfs_disp_evt1") == 0) {
 			size->parameter[i * size->num_of_col + MINMAX_MIN_FREQ] = arg_disp_min / 1000;
 			size->parameter[i * size->num_of_col + MINMAX_MAX_FREQ] = arg_disp_max / 1000;
+			size->parameter[i * size->num_of_col + MINMAX_RESUME_FREQ] = arg_disp_max / 1000;
 			size->parameter[i * size->num_of_col + MINMAX_BOOT_FREQ] = 640;
 		} else if (ect_strcmp(size->table_name, "MINMAX_dvfs_disp") == 0) {
 			size->parameter[i * size->num_of_col + MINMAX_MIN_FREQ] = arg_disp_min / 1000;
 			size->parameter[i * size->num_of_col + MINMAX_MAX_FREQ] = arg_disp_max / 1000;
+			size->parameter[i * size->num_of_col + MINMAX_RESUME_FREQ] = arg_disp_max / 1000;
 			size->parameter[i * size->num_of_col + MINMAX_BOOT_FREQ] = 640;
 		}
 	}
