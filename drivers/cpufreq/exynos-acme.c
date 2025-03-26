@@ -1065,7 +1065,7 @@ static int init_dm(struct exynos_cpufreq_domain *domain,
 	return register_exynos_dm_freq_scaler(domain->dm_type, dm_scaler);
 }
 
-unsigned long arg_disp_min = 200000;
+unsigned long arg_disp_min = 134000;
 
 static int __init cpufreq_read_disp_min(char *disp_min)
 {
