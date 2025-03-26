@@ -13755,8 +13755,8 @@
 			cl0 {
 				qos,label = "LIT";
 				qos,delay_time = <0x9>;
-				qos,table_size = <0xb>;
-				qos,table = <1950000 0x1b5fd0 0x19c990 0x163780 0x130b00 0x101148 0xe7b08 0xcb200 0xae8f8 0x91ff0 0x6f158>;
+				qos,table_size=<13>;
+				qos,table=<1950000 1794000 1690000 1456000 1248000 1053000 949000 832000 715000 598000 455000 299000 208000>;
 			};
 
 			cl1 {
