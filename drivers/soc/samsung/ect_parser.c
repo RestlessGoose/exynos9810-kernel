@@ -917,6 +917,8 @@ static int ect_parse_gen_param_table(int parser_version, void *address, struct e
 			size->parameter[i * size->num_of_col + MINMAX_MAX_FREQ] = arg_disp_max / 1000;
 			size->parameter[i * size->num_of_col + MINMAX_RESUME_FREQ] = arg_disp_max / 1000;
 			size->parameter[i * size->num_of_col + MINMAX_BOOT_FREQ] = 640;
+		} else if (ect_strcmp(size->table_name, "MINMAX_dvs_cp") == 0) {
+			size->parameter[i * size->num_of_col + MINMAX_RESUME_FREQ] = 800;
 		}
 	}
 
