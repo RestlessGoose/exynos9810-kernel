@@ -10606,31 +10606,6 @@
 		};
 	};
 
-	cpu_hotplug {
-		compatible = "exynos, cpu_hotplug";
-		boot_lock_time = <0x28>;
-		fast_hp_cpus = "5-7";
-	};
-
-	hotplug_governor {
-		compatible = "exynos, hotplug_governor";
-		single_change_ms = <0x1e>;
-		dual_change_ms = <0x1e>;
-		quad_change_ms = <0xf>;
-		big_heavy_thr = <0x258>;
-		lit_heavy_thr = <0xb4>;
-		big_idle_thr = <0x6a>;
-		lit_idle_thr = <0x2e>;
-		ldsum_heavy_thr = <0x320>;
-		ldsum_enabled = <0x0>;
-		skip_lit_enabled = <0x0>;
-		cl_busy_ratio = <0x41>;
-		dual_freq = <1924000>;
-		triple_freq = <1924000>;
-		quad_freq = <1924000>;
-		cal-id = <0xb040003>;
-	};
-
 	schedutil_gov {
 
 		domain@0 {
@@ -10820,9 +10795,6 @@
 		id = <0x0>;
 		sensors = <0x5e>;
 		sensing_mode = "balance";
-		hotplug_enable = <0x0>;
-		hotplug_in_threshold = <0x5b>;
-		hotplug_out_threshold = <0x60>;
 		#thermal-sensor-cells = <0x0>;
 		samsung,tmu_gain = <0x0>;
 		samsung,tmu_reference_voltage = <0x0>;
