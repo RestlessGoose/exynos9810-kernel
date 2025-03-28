@@ -581,11 +581,11 @@ if ! dpkg-query -W -f='${Status}' bsdiff  | grep "ok installed"; then
 		sudo apt install -y bsdiff
 		if ! dpkg-query -W -f='${Status}' bsdiff | grep "ok installed"; then
 			echo "Failed to install bsdiff. Please try installing it manually."
-			exit 0;
+			#exit 0;
 		fi
 	else
 		echo "Please install bsdiff with sudo apt install bsdiff and try again."
-		exit 0;
+		#exit 0;
 	fi
 fi
 
