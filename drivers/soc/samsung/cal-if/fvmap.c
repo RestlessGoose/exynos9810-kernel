@@ -505,6 +505,12 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 				if (old->table[j].rate == 2094000)
 					old->table[j].volt = 768750;
 			}
+			if (strcmp(vclk->name, "dvfs_int") == 0) {
+				if (old->table[j].rate == 534000)
+					old->table[j].rate = 667000;
+				if (old->table[j].rate == 667000)
+					old->table[j].volt = 837500;
+			}
 
 			new->table[j].rate = old->table[j].rate;
 			new->table[j].volt = old->table[j].volt;

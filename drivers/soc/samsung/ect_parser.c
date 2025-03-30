@@ -136,6 +136,14 @@ static int ect_parse_dvfs_domain(int parser_version, void *address, struct ect_d
 		domain->max_frequency = 640000;
 	} else if (ect_strcmp(domain->domain_name, "dvfs_disp_evt1") == 0) {
 		domain->max_frequency = 640000;
+	} else if (ect_strcmp(domain->domain_name, "dvfs_int") == 0) {
+		domain->max_frequency = 667000;
+		for (j = 0; j < domain->num_of_level; ++j) {
+			if (domain->list_level[j].level == 534000)
+				domain->list_level[j].level = 667000;
+		}
+	} else if (ect_strcmp(domain->domain_name, "dvfs_mif") == 0) {
+		domain->max_frequency = 2093000;
 	}
 
 
@@ -353,6 +361,14 @@ static int ect_parse_voltage_domain(int parser_version, void *address, struct ec
 			ret = -EINVAL;
 		goto err_parse_voltage_table;
 			}
+	}
+
+
+	for (j = 0; j < domain->num_of_level; ++j) {
+		if (ect_strcmp(domain->domain_name, "dvfs_int") == 0) {
+			if (domain->level_list[j] == 534)
+				domain->level_list[j] = 667;
+		}
 	}
 
 	return 0;
@@ -814,6 +830,13 @@ static int ect_parse_minlock_domain(int parser_version, void *address, struct ec
 
 	domain->level = address;
 
+	for (j = 0; j < domain->num_of_level; ++j) {
+		if (ect_strcmp(domain->domain_name, "dvfs_int") == 0) {
+			if (domain->level[j].main_frequencies == 534000)
+				domain->level[j].main_frequencies = 667000;
+		}
+	}
+
 	return 0;
 }
 
@@ -901,7 +924,7 @@ static int ect_parse_gen_param_table(int parser_version, void *address, struct e
 			size->parameter[i * size->num_of_col + MINMAX_BOOT_FREQ] = 1924;
 		} else if (ect_strcmp(size->table_name, "MINMAX_dvfs_mif") == 0) {
 			size->parameter[i * size->num_of_col + MINMAX_MIN_FREQ] = arg_mif_min / 1000;
-			size->parameter[i * size->num_of_col + MINMAX_MAX_FREQ] = arg_mif_max / 1000;
+			size->parameter[i * size->num_of_col + MINMAX_MAX_FREQ] = 2093;
 			size->parameter[i * size->num_of_col + MINMAX_BOOT_FREQ] = 1794;
 		} else if (ect_strcmp(size->table_name, "MINMAX_dvfs_g3d") == 0) {
 			size->parameter[i * size->num_of_col + MINMAX_MIN_FREQ] = arg_gpu_min / 1000;
@@ -919,6 +942,9 @@ static int ect_parse_gen_param_table(int parser_version, void *address, struct e
 			size->parameter[i * size->num_of_col + MINMAX_BOOT_FREQ] = 640;
 		} else if (ect_strcmp(size->table_name, "MINMAX_dvs_cp") == 0) {
 			size->parameter[i * size->num_of_col + MINMAX_RESUME_FREQ] = 800;
+		} else if (ect_strcmp(size->table_name, "MINMAX_dvfs_int") == 0) {
+			size->parameter[i * size->num_of_col + MINMAX_MAX_FREQ] = 667;
+			size->parameter[i * size->num_of_col + MINMAX_MIN_FREQ] = 107;
 		}
 	}
 
