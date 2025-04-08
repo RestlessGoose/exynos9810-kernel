@@ -79,7 +79,7 @@ static int ect_parse_string(void **address, char **value, unsigned int *length)
 static int ect_parse_dvfs_domain(int parser_version, void *address, struct ect_dvfs_domain *domain)
 {
 	int ret = 0;
-	int i, j;
+	int i;
 	char *clock_name;
 	int length;
 
@@ -130,14 +130,6 @@ static int ect_parse_dvfs_domain(int parser_version, void *address, struct ect_d
 	address += sizeof(struct ect_dvfs_level) * domain->num_of_level;
 
 	domain->list_dvfs_value = address;
-
-
-	if (ect_strcmp(domain->domain_name, "dvfs_disp") == 0) {
-		domain->max_frequency = 640000;
-	} else if (ect_strcmp(domain->domain_name, "dvfs_disp_evt1") == 0) {
-		domain->max_frequency = 640000;
-	}
-
 
 	return 0;
 
