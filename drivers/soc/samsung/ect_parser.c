@@ -205,15 +205,10 @@ static int ect_parse_dvfs_header(void *address, struct ect_info *info)
 
 static int ect_parse_pll(int parser_version, void *address, struct ect_pll *ect_pll)
 {
-	struct ect_pll_frequency *frequency;
-	int j;
-
 	ect_parse_integer(&address, &ect_pll->type_pll);
 	ect_parse_integer(&address, &ect_pll->num_of_frequency);
 
 	ect_pll->frequency_list = address;
-
-
 
 	return 0;
 }
@@ -322,7 +317,7 @@ static int ect_parse_voltage_table(int parser_version, void **address, struct ec
 static int ect_parse_voltage_domain(int parser_version, void *address, struct ect_voltage_domain *domain)
 {
 	int ret = 0;
-	int i, j;
+	int i;
 
 	ect_parse_integer(&address, &domain->num_of_group);
 	ect_parse_integer(&address, &domain->num_of_level);
@@ -800,8 +795,6 @@ static int ect_parse_timing_param_header(void *address, struct ect_info *info)
 
 static int ect_parse_minlock_domain(int parser_version, void *address, struct ect_minlock_domain *domain)
 {
-	int j;
-
 	ect_parse_integer(&address, &domain->num_of_level);
 
 	domain->level = address;
