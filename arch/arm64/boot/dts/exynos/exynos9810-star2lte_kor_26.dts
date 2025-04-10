@@ -9516,7 +9516,7 @@
 		devfreq_type = "int";
 		devfreq_domain_name = "dvfs_int";
 		use_delay_time = "false";
-		freq_info = <0xa2d78 0x2b750 0x1a1f8 0x1a1f8 0xa2d78 0xa2d78>;
+		freq_info = <534000 178000 107000 107000 534000 534000>;
 		boot_info = <0x28 0xa2d78>;
 		use_get_dev = "false";
 		polling_ms = <0x0>;
