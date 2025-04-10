@@ -451,12 +451,7 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 	struct cmucal_clk *clk_node;
 	unsigned int paddr_offset, fvaddr_offset;
 	int size, margin;
-	int i, j, h;
-	unsigned int cl0_offsets_m[14] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0};
-	unsigned int cl1_offsets_m[21] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
-	unsigned int g3d_offsets_m[8] = {0,0,0,0,0,0,0,0};
-	unsigned int mif_offsets_m[11] = {0,0,0,0,0,0,0,0,0,0,0};
-	unsigned int cp_offsets_m[4] = {0,0,0,0};
+	int i, j;
 
 	fvmap_header = map_base;
 	header = sram_base;
@@ -504,60 +499,6 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 		if (margin)
 			cal_dfs_set_volt_margin(i | ACPM_VCLK_TYPE, margin);
 
-		// ICE: Set offset table based on ASV group scores
-
-		pr_info("[ICE] Setting offset tables...\n");
-
-		if (strcmp(vclk->name, "dvfs_cpucl0") == 0) {
-			if (ice_asv_scores_cl0 == 11)
-				//memcpy(ice_cl0_a11, cl0_offsets_m, sizeof(ice_cl0_a11));
-				for (h = 0; h < ice_cl0_nfreqs; h++) {
-					cl0_offsets_m[h] = ice_cl0_a11[h];
-				}
-			else {
-				pr_info("[ICE] Unsupported ASV group score for CL0: %n\n", ice_asv_scores_cl0);
-			}
-		} else if (strcmp(vclk->name, "dvfs_cpucl1") == 0) {
-			if (ice_asv_scores_cl1 == 9)
-				//memcpy(ice_cl1_a9, cl1_offsets_m, sizeof(ice_cl1_a9));
-				for (h = 0; h < ice_cl1_nfreqs; h++) {
-					cl1_offsets_m[h] = ice_cl1_a9[h];
-				}
-			else {
-				pr_info("[ICE] Unsupported ASV group score for CL1: %n\n", ice_asv_scores_cl1);
-			}
-		} else if (strcmp(vclk->name, "dvfs_g3d") == 0) {
-			if (ice_asv_scores_g3d == 6)
-				//memcpy(ice_g3d_a6, g3d_offsets_m, sizeof(ice_g3d_a6));
-				for (h = 0; h < ice_g3d_nfreqs; h++) {
-					g3d_offsets_m[h] = ice_g3d_a6[h];
-				}
-			else {
-				pr_info("[ICE] Unsupported ASV group score for G3D: %n\n", ice_asv_scores_g3d);
-			}
-		} else if (strcmp(vclk->name, "dvfs_mif") == 0) {
-			if (ice_asv_scores_mif == 7)
-				//memcpy(ice_mif_a7, mif_offsets_m, sizeof(ice_mif_a7));
-				for (h = 0; h < ice_mif_nfreqs; h++) {
-					mif_offsets_m[h] = ice_mif_a7[h];
-				}
-			else {
-				pr_info("[ICE] Unsupported ASV group score for MIF: %n\n", ice_asv_scores_mif);
-			}
-		} else if (strcmp(vclk->name, "dvfs_cp") == 0) {
-			if (ice_asv_scores_cp == 10)
-				//memcpy(ice_cp_a10, cp_offsets_m, sizeof(ice_cp_a10));
-				for (h = 0; h < ice_cp_nfreqs; h++) {
-					cp_offsets_m[h] = ice_cp_a10[h];
-				}
-			else {
-				pr_info("[ICE] Unsupported ASV group score for CP: %n\n", ice_asv_scores_cp);
-			}
-		}
-
-		pr_info("[ICE] Set offset tables.\n");
-
-
 		// ICE: Apply offset table
 
 		pr_info("[ICE] Applying undervolt offset tables...\n");
@@ -565,28 +506,28 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 		for (j = 0; j < fvmap_header[i].num_of_lv; j++) {
 			if (strcmp(vclk->name, "dvfs_mif") == 0) {
 				if (old->table[j].rate == 2002000)
-					old->table[j].volt = 750000;
+					old->table[j].volt = 768750;
 				if (old->table[j].rate == 2093000)
-					old->table[j].volt = 768750;
+					old->table[j].volt = 800000;
 				if (old->table[j].rate == 2094000)
-					old->table[j].volt = 768750;
+					old->table[j].volt = 800000;
 			}
 
 			if (strcmp(vclk->name, "dvfs_cpucl0") == 0) {
 				if (old->table[j].rate == ice_cl0_freqs[j])
-					old->table[j].volt = old->table[j].volt - (cl0_offsets_m[j] * ice_uv_step);
+					old->table[j].volt = old->table[j].volt - (ice_cl0[(j * 16) + ice_asv_scores_cl0] * ice_uv_step);
 			} else if (strcmp(vclk->name, "dvfs_cpucl1") == 0) {
 				if (old->table[j].rate == ice_cl1_freqs[j])
-					old->table[j].volt = old->table[j].volt - (cl1_offsets_m[j] * ice_uv_step);
+					old->table[j].volt = old->table[j].volt - (ice_cl1[(j * 16) + ice_asv_scores_cl1] * ice_uv_step);
 			} else if (strcmp(vclk->name, "dvfs_g3d") == 0) {
 				if (old->table[j].rate == ice_g3d_freqs[j])
-					old->table[j].volt = old->table[j].volt - (g3d_offsets_m[j] * ice_uv_step);
+					old->table[j].volt = old->table[j].volt - (ice_g3d[(j * 16) + ice_asv_scores_g3d] * ice_uv_step);
 			} else if (strcmp(vclk->name, "dvfs_mif") == 0) {
 				if (old->table[j].rate == ice_mif_freqs[j])
-					old->table[j].volt = old->table[j].volt - (mif_offsets_m[j] * ice_uv_step);
+					old->table[j].volt = old->table[j].volt - (ice_mif[(j * 16) + ice_asv_scores_mif] * ice_uv_step);
 			} else if (strcmp(vclk->name, "dvfs_cp") == 0) {
 				if (old->table[j].rate == ice_cp_freqs[j])
-					old->table[j].volt = old->table[j].volt - (cp_offsets_m[j] * ice_uv_step);
+					old->table[j].volt = old->table[j].volt - (ice_cp[(j * 16) + ice_asv_scores_cp] * ice_uv_step);
 			}
 
 			new->table[j].rate = old->table[j].rate;
