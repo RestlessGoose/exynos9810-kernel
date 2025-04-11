@@ -51,4 +51,7 @@ ifeq ($(CONFIG_MALI_DDK_VERSION),y)
 	ifeq ($(CONFIG_MALI_BIFROST_R38P1),y)
 		obj-y += bv_r38p1/
 	endif
+	ifeq ($(CONFIG_MALI_BIFROST_R51P0),y)
+		obj-y += bv_r51p0/
+	endif
 endif
