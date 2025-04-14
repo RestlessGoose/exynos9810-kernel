@@ -10783,11 +10783,11 @@
 			cal-id = <0xb040003>;
 			dm-type = <0x1>;
 			min-freq = <598000>;
-			max-freq = <1924000>;
-			policy-max = <1924000>;
+			max-freq = <2002000>;
+			policy-max = <2002000>;
 			pm_qos-min-class = <0x5>;
 			pm_qos-max-class = <0x6>;
-			pm_qos-booting = <0x1d5ba0>;
+			pm_qos-booting = <2002000>;
 			#cooling-cells = <0x2>;
 			linux,phandle = <0x14f>;
 			phandle = <0x14f>;
