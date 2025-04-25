@@ -745,6 +745,7 @@ TRACE_EVENT(sched_load_avg_cpu,
 		  __entry->util_avg_pelt, __entry->util_avg_walt)
 );
 
+#ifdef CONFIG_RT_GROUP_SCHED
 TRACE_EVENT(sched_rt_load_avg_cpu,
 
 	TP_PROTO(int cpu, struct rt_rq *rt_rq),
@@ -763,6 +764,7 @@ TRACE_EVENT(sched_rt_load_avg_cpu,
 
 	TP_printk("cpu=%d util_avg=%lu ", __entry->cpu, __entry->util_avg)
 );
+#endif
 
 TRACE_EVENT(sched_load_balance_cpu,
 
