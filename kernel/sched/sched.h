@@ -557,7 +557,7 @@ struct rt_rq {
 	/* Nests inside the rq lock: */
 	raw_spinlock_t rt_runtime_lock;
 
-#ifdef CONFIG_RT_GROUP_SCHED
+// #ifdef CONFIG_RT_GROUP_SCHED
 	unsigned long rt_nr_boosted;
 
 	struct rq *rq;
@@ -566,7 +566,7 @@ struct rt_rq {
 #ifndef CONFIG_64BIT
 		u64 load_last_update_time_copy;
 #endif
-#endif
+// #endif
 };
 
 /* Deadline class' related fields in a runqueue */
@@ -1313,6 +1313,9 @@ static inline u64 global_rt_runtime(void)
 
 	return (u64)sysctl_sched_rt_runtime * NSEC_PER_USEC;
 }
+
+
+// #define rt_entity_is_task(rt_se) (!(rt_se)->my_q)
 
 static inline int task_current(struct rq *rq, struct task_struct *p)
 {

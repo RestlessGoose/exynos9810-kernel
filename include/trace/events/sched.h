@@ -818,6 +818,87 @@ TRACE_EVENT(sched_load_avg_cpu,
 		  __entry->util_avg_pelt, __entry->util_avg_walt)
 );
 
+#ifdef CONFIG_RT_GROUP_SCHED
+TRACE_EVENT(sched_rt_load_avg_cpu,
+
+	TP_PROTO(int cpu, struct rt_rq *rt_rq),
+
+	TP_ARGS(cpu, rt_rq),
+
+	TP_STRUCT__entry(
+		__field(int,		cpu)
+		__field(unsigned long,	util_avg)
+	),
+
+	TP_fast_assign(
+		__entry->cpu = cpu;
+		__entry->util_avg = rt_rq->avg.util_avg;
+	),
+
+	TP_printk("cpu=%d util_avg=%lu ", __entry->cpu, __entry->util_avg)
+);
+#endif
+
+TRACE_EVENT(sched_load_balance_cpu,
+
+	TP_PROTO(unsigned int src, unsigned int dst),
+
+	TP_ARGS(src, dst),
+
+	TP_STRUCT__entry(
+		__field( unsigned int, src      )
+		__field( unsigned int, dst      )
+	),
+
+	TP_fast_assign(
+		__entry->src = src;
+		__entry->dst = dst;
+	),
+
+	TP_printk("load bal : src %d, dst %d\n", __entry->src, __entry->dst)
+);
+
+#ifdef CONFIG_SCHED_USE_FLUID_RT
+TRACE_EVENT(sched_fluid_select_cpu,
+
+	TP_PROTO(struct task_struct *p, struct task_struct *vp, int best_cpu,
+		unsigned long cpu_load, unsigned long task_load, char *label),
+
+	TP_ARGS(p, vp, best_cpu, cpu_load, task_load, label),
+
+	TP_STRUCT__entry(
+		__array(char,	comm,		TASK_COMM_LEN)
+		__array(char,	victim_comm,	TASK_COMM_LEN)
+		__field(pid_t,	pid)
+		__field(pid_t,	vpid)
+		__field(int,	vic_prio)
+		__field(int,	task_prio)
+		__field(int,	best_cpu)
+		__field(unsigned long,	cpu_load)
+		__field(unsigned long,	task_load)
+		__array(char,	label,	64)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->label, label, 64);
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->pid = p->pid;
+		memcpy(__entry->victim_comm, vp->comm, TASK_COMM_LEN);
+		__entry->vpid = vp->pid;
+		__entry->vic_prio = vp->prio;
+		__entry->task_prio = p->prio;
+		__entry->best_cpu = best_cpu;
+		__entry->cpu_load = cpu_load;
+		__entry->task_load = task_load;
+	),
+
+	TP_printk("comm=%s pid=%d[%d] vcomm=%s vpid=%d[%d] best_cpu=%d cpu_load=%lu task_load=%lu Reason=%s",
+			__entry->comm, __entry->pid, __entry->task_prio,
+			__entry->victim_comm, __entry->vpid, __entry->vic_prio,
+			__entry->best_cpu, __entry->cpu_load, __entry->task_load, __entry->label)
+);
+#endif
+
 /*
  * Tracepoint for sched_tune_config settings
  */
