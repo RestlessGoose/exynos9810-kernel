@@ -1099,7 +1099,7 @@ static int __init cpufreq_read_disp_max(char *disp_max)
 }
 __setup("disp_max=", cpufreq_read_disp_max);
 
-unsigned long arg_cpu_min_c1 = 208000;
+unsigned long arg_cpu_min_c1 = 455000;
 
 static int __init cpufreq_read_cpu_min_c1(char *cpu_min_c1)
 {
@@ -1116,7 +1116,7 @@ static int __init cpufreq_read_cpu_min_c1(char *cpu_min_c1)
 }
 __setup("cpu_min_c1=", cpufreq_read_cpu_min_c1);
 
-unsigned long arg_cpu_min_c2 = 598000;
+unsigned long arg_cpu_min_c2 = 650000;
 
 static __init int cpufreq_read_cpu_min_c2(char *cpu_min_c2)
 {
