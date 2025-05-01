@@ -142,6 +142,7 @@ Apollo/Product/*.img
 Apollo/Product/*.zip
 arch/arm64/configs/tmp_defconfig
 drivers/gator_5.27/generated_gator_src_md5.h
+<<<<<<< HEAD
 scripts/crypto/__pycache__/*
 scripts/fmp/__pycache__/*
 drivers/gator_5.27/gator_src_md5.h
@@ -156,3 +157,7 @@ drivers/kernelsu
 
 # Toolchain
 toolchain/*
+=======
+scripts/crypto/__pycache__/
+scripts/fmp/__pycache__/
+>>>>>>> parent of a580eccd3afa (drivers: kernelsu: add KernelSU importer and patches)
