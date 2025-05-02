@@ -151,8 +151,10 @@ net/wireguard/crypto/zinc/poly1305/poly1305-arm64.S
 scripts/dtbtool_exynos/dtbtool
 arch/arm64/boot/dts/exynos/*reverse.dts
 
-# KSU
-drivers/kernelsu
-
 # Toolchain
 toolchain/*
+
+# kernelsu
+drivers/kernelsu/*
+
+
