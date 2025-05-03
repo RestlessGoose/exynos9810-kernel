@@ -93,6 +93,7 @@ enum bpf_cmd {
 	BPF_MAP_GET_FD_BY_ID,
 	BPF_OBJ_GET_INFO_BY_FD,
 	BPF_PROG_QUERY,
+	BPF_RAW_TRACEPOINT_OPEN,
 	BPF_BTF_LOAD = 18,
 };
 
@@ -131,7 +132,10 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_LWT_XMIT,
 	BPF_PROG_TYPE_SOCK_OPS,
 	BPF_PROG_TYPE_SK_SKB,
+	BPF_PROG_TYPE_CGROUP_DEVICE,
+	BPF_PROG_TYPE_RAW_TRACEPOINT = 17,
 	BPF_PROG_TYPE_CGROUP_SOCK_ADDR = 18,
+	BPF_PROG_TYPE_CGROUP_SYSCTL = 23,
 };
 
 enum bpf_attach_type {
@@ -140,12 +144,14 @@ enum bpf_attach_type {
 	BPF_CGROUP_INET_SOCK_CREATE,
 	BPF_CGROUP_SOCK_OPS,
 	BPF_CGROUP_SMAP_INGRESS,
+	BPF_CGROUP_DEVICE,
 	BPF_CGROUP_INET4_BIND = 8,
 	BPF_CGROUP_INET6_BIND = 9,
 	BPF_CGROUP_INET4_CONNECT,
 	BPF_CGROUP_INET6_CONNECT,
 	BPF_CGROUP_INET4_POST_BIND,
 	BPF_CGROUP_INET6_POST_BIND,
+	BPF_CGROUP_SYSCTL = 18,
 	__MAX_BPF_ATTACH_TYPE
 };
 
@@ -322,6 +328,11 @@ union bpf_attr {
 		__aligned_u64	prog_ids;
 		__u32		prog_cnt;
 	} query;
+
+	struct {
+		__u64 name;
+		__u32 prog_fd;
+	} raw_tracepoint;
 
 	struct { /* anonymous struct for BPF_BTF_LOAD */
 		__aligned_u64	btf;
@@ -1047,6 +1058,29 @@ struct bpf_sock_ops {
  */
 enum {
 	BPF_SOCK_OPS_VOID,
+};
+
+struct bpf_raw_tracepoint_args {
+	__u64 args[0];
+};
+
+#define BPF_DEVCG_ACC_MKNOD    (1ULL << 0)
+#define BPF_DEVCG_ACC_READ     (1ULL << 1)
+#define BPF_DEVCG_ACC_WRITE    (1ULL << 2)
+
+#define BPF_DEVCG_DEV_BLOCK    (1ULL << 0)
+#define BPF_DEVCG_DEV_CHAR     (1ULL << 1)
+
+struct bpf_cgroup_dev_ctx {
+	__u32 access_type; /* (access << 16) | type */
+	__u32 major;
+	__u32 minor;
+};
+
+struct bpf_sysctl {
+	__u32	write;		/* Sysctl is being read (= 0) or written (= 1).
+				 * Allows 1,2,4-byte read, but no write.
+				 */
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */

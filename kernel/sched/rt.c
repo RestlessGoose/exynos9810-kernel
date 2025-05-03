@@ -219,6 +219,7 @@ err:
 
 #else /* CONFIG_RT_GROUP_SCHED */
 
+#undef rt_entity_is_task
 #define rt_entity_is_task(rt_se) (1)
 
 static inline struct task_struct *rt_task_of(struct sched_rt_entity *rt_se)
@@ -255,7 +256,11 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 
 #ifdef CONFIG_SMP
 
+#ifdef CONFIG_RT_GROUP_SCHED
 #define entity_is_task(se)	(!se->my_q)
+#else
+#define entity_is_task(se)	(1)
+#endif
 #ifdef CONFIG_PELT_HALFLIFE_32
 #define LOAD_AVG_MAX		47742
 #endif
@@ -347,13 +352,13 @@ __update_load_avg(u64 now, int cpu, struct sched_avg *sa,
 	return 1;
 }
 
+#ifdef CONFIG_RT_GROUP_SCHED
 void rt_rq_util_change(struct rt_rq *rt_rq)
 {
 	if (&this_rq()->rt == rt_rq)
 		cpufreq_update_util(rt_rq->rq, SCHED_CPUFREQ_RT);
 }
 
-#ifdef CONFIG_RT_GROUP_SCHED
 /* Take into account change of utilization of a child task group */
 static inline void
 update_tg_rt_util(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se)
@@ -426,7 +431,9 @@ int update_rt_rq_load_avg(u64 now, int cpu, struct rt_rq *rt_rq, bool update_fre
 {
 	int decayed, removed_util = 0;
 	struct sched_avg *sa = &rt_rq->avg;
+#ifdef CONFIG_RT_GROUP_SCHED
 	struct rq *rq = rt_rq->rq;
+#endif
 
 	if (atomic_long_read(&rt_rq->removed_util_avg)) {
 		long r = atomic_long_xchg(&rt_rq->removed_util_avg, 0);
@@ -456,11 +463,13 @@ int update_rt_rq_load_avg(u64 now, int cpu, struct rt_rq *rt_rq, bool update_fre
 	smp_wmb();
 	rt_rq->load_last_update_time_copy = sa->last_update_time;
 #endif
+#ifdef CONFIG_RT_GROUP_SCHED
 	if (update_freq && (decayed || removed_util))
 		rt_rq_util_change(rt_rq);
 
 	if (rt_rq == &rq->rt)
 		trace_sched_rt_load_avg_cpu(cpu_of(rq), rt_rq);
+#endif
 
 	return decayed;
 }
@@ -477,8 +486,10 @@ void update_rt_load_avg(u64 now, struct sched_rt_entity *rt_se, struct rt_rq *rt
 	update_rt_rq_load_avg(now, cpu, rt_rq, true);
 	propagate_rt_entity_load_avg(rt_se, rt_rq);
 
+#ifdef CONFIG_RT_GROUP_SCHED
 	if (entity_is_task(rt_se))
 		trace_sched_rt_load_avg_task(rt_task_of(rt_se), &rt_se->avg);
+#endif
 }
 
 static void pull_rt_task(struct rq *this_rq);
@@ -1469,7 +1480,7 @@ void dec_rt_tasks(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 	dec_rt_migration(rt_se, rt_rq);
 	dec_rt_group(rt_se, rt_rq);
 }
-#ifdef CONFIG_SMP
+#if defined(CONFIG_SMP) && defined(CONFIG_RT_GROUP_SCHED)
 /**
  * attach_rt_entity_load_avg - attach this entity to its rt_rq load avg
  * @rt_rq: rt_rq to attach to
@@ -1488,10 +1499,8 @@ attach_entity_load_avg(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se)
 	rt_rq->avg.util_sum += rt_se->avg.util_sum;
 	rt_rq->avg.load_avg += rt_se->avg.load_avg;
 	rt_rq->avg.load_sum += rt_se->avg.load_sum;
-#ifdef CONFIG_RT_GROUP_SCHED
 	/* Set propagate_avg for task group load propagate */
 	rt_rq->propagate_avg = 1;
-#endif
 	rt_rq_util_change(rt_rq);
 }
 
@@ -1511,17 +1520,15 @@ static void detach_entity_load_avg(struct rt_rq *rt_rq, struct sched_rt_entity *
 	sub_positive(&rt_rq->avg.util_sum, rt_se->avg.util_sum);
 	sub_positive(&rt_rq->avg.load_avg, rt_se->avg.load_avg);
 	sub_positive(&rt_rq->avg.load_sum, rt_se->avg.load_sum);
-#ifdef CONFIG_RT_GROUP_SCHED
 	/* Set propagate_avg for task group load propagate */
 	rt_rq->propagate_avg = 1;
-#endif
 	rt_rq_util_change(rt_rq);
 }
 #else
 static inline void
-attach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+attach_entity_load_avg(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se) {}
 static inline void
-detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+detach_entity_load_avg(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se) {}
 #endif
 /*
  * Change rt_se->run_list location unless SAVE && !MOVE
@@ -1581,7 +1588,7 @@ static void __enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
 	update_rt_load_avg(now, rt_se, rt_rq, cpu_of(rq_of_rt_rq(rt_rq)));
 
 	if (rt_entity_is_task(rt_se) && !rt_se->avg.last_update_time)
-		attach_entity_load_avg(&rq_of_rt_se(rt_se)->rt, rt_se);
+		attach_entity_load_avg(rt_rq, rt_se);
 
 	inc_rt_tasks(rt_se, rt_rq);
 }
@@ -1921,6 +1928,7 @@ static void remove_entity_load_avg(struct sched_rt_entity *rt_se)
 	atomic_long_add(rt_se->avg.util_avg, &rt_rq->removed_util_avg);
 }
 
+#ifdef CONFIG_RT_GROUP_SCHED
 static void attach_task_rt_rq(struct task_struct *p)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
@@ -1940,6 +1948,7 @@ static void detach_task_rt_rq(struct task_struct *p)
 	update_rt_load_avg(now, rt_se, rt_rq, cpu_of(rq_of_rt_rq(rt_rq)));
 	detach_entity_load_avg(rt_rq, rt_se);
 }
+#endif
 
 static void migrate_task_rq_rt(struct task_struct *p)
 {
@@ -2988,7 +2997,9 @@ static void rq_offline_rt(struct rq *rq)
  */
 static void switched_from_rt(struct rq *rq, struct task_struct *p)
 {
+#ifdef CONFIG_RT_GROUP_SCHED
 	detach_task_rt_rq(p);
+#endif
 	/*
 	 * If there are other RT tasks then we will reschedule
 	 * and the scheduling of the other RT tasks will handle
