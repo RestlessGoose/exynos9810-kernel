@@ -2,7 +2,7 @@
  *  IceCold Engine data file
  *  Targeted for CrownTrail
  *
- *  Revision B05
+ *  Revision B06
  */
 
 extern unsigned int ice_asv_scores_cl0;
@@ -68,7 +68,7 @@ static unsigned int ice_g3d [8*16] = {
     0, 0, 0, 1, 3, 3, 5, 6, 7, 0, 0, 0, 0, 0, 0, 0,     // 385
     0, 0, 0, 1, 2, 3, 4, 5, 7, 0, 0, 0, 0, 0, 0, 0,     // 338
     0, 0, 0, 1, 2, 2, 4, 4, 5, 0, 0, 0, 0, 0, 0, 0,     // 299
-    0, 0, 0, 0, 1, 1, 3, 2, 3, 0, 0, 0, 0, 0, 0, 0,     // 260
+    0, 0, 0, 0, 1, 1, 2, 3, 3, 0, 0, 0, 0, 0, 0, 0,     // 260
 };
 
 static unsigned int ice_mif [11*16] = {
