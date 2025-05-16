@@ -544,64 +544,6 @@ retry:
 	return 0;
 }
 
-static void log_buffer_init(struct device *dev, struct device_node *node)
-{
-	const __be32 *prop;
-	unsigned int num_timestamps = 0;
-	unsigned int len = 0;
-	unsigned int dump_base = 0;
-	unsigned int dump_size = 0;
-
-	prop = of_get_property(node, "num-timestamps", &len);
-	if (prop)
-		num_timestamps = be32_to_cpup(prop);
-
-	acpm_debug = devm_kzalloc(dev, sizeof(struct acpm_debug_info), GFP_KERNEL);
-	if (IS_ERR(acpm_debug))
-		return ;
-
-	acpm_debug->time_index = acpm_ipc->sram_base + acpm_ipc->initdata->ktime_index;
-	acpm_debug->num_timestamps = num_timestamps;
-	acpm_debug->timestamps = devm_kzalloc(dev,
-			sizeof(unsigned long long) * num_timestamps, GFP_KERNEL);
-	acpm_debug->log_buff_rear = acpm_ipc->sram_base + acpm_ipc->initdata->log_buf_rear;
-	acpm_debug->log_buff_front = acpm_ipc->sram_base + acpm_ipc->initdata->log_buf_front;
-	acpm_debug->log_buff_base = acpm_ipc->sram_base + acpm_ipc->initdata->log_data;
-	acpm_debug->log_buff_len = acpm_ipc->initdata->log_entry_len;
-	acpm_debug->log_buff_size = acpm_ipc->initdata->log_entry_size;
-
-	prop = of_get_property(node, "debug-log-level", &len);
-	if (prop)
-		acpm_debug->debug_log_level = be32_to_cpup(prop);
-
-	prop = of_get_property(node, "dump-base", &len);
-	if (prop)
-		dump_base = be32_to_cpup(prop);
-
-	prop = of_get_property(node, "dump-size", &len);
-	if (prop)
-		dump_size = be32_to_cpup(prop);
-
-	if (dump_base && dump_size) {
-		acpm_debug->dump_base = ioremap(dump_base, dump_size);
-		acpm_debug->dump_size = dump_size;
-	}
-
-	prop = of_get_property(node, "logging-period", &len);
-	if (prop)
-		acpm_debug->period = be32_to_cpup(prop);
-
-#ifdef CONFIG_EXYNOS_SNAPSHOT_ACPM
-	acpm_debug->dump_dram_base = kzalloc(acpm_debug->dump_size, GFP_KERNEL);
-	exynos_ss_printk("[ACPM] acpm framework SRAM dump to dram base: 0x%x\n",
-			virt_to_phys(acpm_debug->dump_dram_base));
-#endif
-	pr_info("[ACPM] acpm framework SRAM dump to dram base: 0x%llx\n",
-			virt_to_phys(acpm_debug->dump_dram_base));
-
-	spin_lock_init(&acpm_debug->lock);
-}
-
 int acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg)
 {
 	int ret;
