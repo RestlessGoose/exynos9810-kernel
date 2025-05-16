@@ -4482,8 +4482,8 @@
 			input_booster,label = "touch";
 			input_booster,type = <2>;	/* BOOSTER_DEVICE_TOUCH */
 			/* Time table */
-			input_booster,head_time = <130>;
-			input_booster,tail_time = <500>;
+			input_booster,head_time = <50>;
+			input_booster,tail_time = <300>;
 
 			/* Frequency table */
 			/* for level	:	Head, Tail */
@@ -4497,7 +4497,7 @@
 
 				resource@2 {
 					resource,label = "cluster0";
-					resource,value = <832000 832000>;
+					resource,value = <1794000 832000>;
 				};
 
 				resource@3 {
