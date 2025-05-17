@@ -313,8 +313,8 @@ BUILD_GENERATE_CONFIG()
   if [[ "$CR_KSU" =~ ^[yY]$ ]]; then
     echo " Building KernelSU"
     echo "CONFIG_KSU=y" >> $CR_DEFCONFIG/tmp_defconfig
-    CR_IMAGE_NAME=$CR_IMAGE_NAME-KSU
-    zver=$zver-KernelSU
+    CR_IMAGE_NAME=$CR_IMAGE_NAME-KSUN
+    zver=$zver-KSUN
   else
     echo "# CONFIG_KSU is not set" >> $CR_DEFCONFIG/tmp_defconfig
   fi
@@ -688,7 +688,7 @@ echo "1) 4.19.236 BPF spoof "  "2) No kernel ver spoof"
 echo " "
 read -p "Please select spoof for BPF (1-2) > " CR_SPOOF4BPF
 echo " "
-read -p "Enable KernelSU? (y/n) > " CR_KSU
+read -p "Enable KernelSU Next? (y/n) > " CR_KSU
 echo " "
 if [ "$CR_TARGET" = "8" ]; then
 echo "Build Aborted"
