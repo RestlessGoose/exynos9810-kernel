@@ -45,7 +45,6 @@ CONFIG_PELT_HALFLIFE_16=y
 CONFIG_IKHEADERS=y
 
 # Enable power efficient workqueues
-CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
 
 #
 # Incremental Filesystem
