@@ -1,7 +1,6 @@
 #!/bin/bash
 
-if grep -q "#source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig; then
-    rm -rf drivers/kernelsu
+if [ ! -d "drivers/kernelsu" ]; then
 	git clone https://github.com/KernelSU-Next/KernelSU-Next
 	cp -r KernelSU-Next/kernel drivers/kernelsu
 	rm -rf KernelSU-Next
