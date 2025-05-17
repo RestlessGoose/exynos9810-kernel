@@ -70,7 +70,7 @@ static ssize_t show_cpufreq_table(struct kobject *kobj,
 	return count - 1;
 }
 
-int exynos_cpufreq_update_volt_table()
+int exynos_cpufreq_update_volt_table(void)
 {
 	struct list_head *domains = get_domain_list();
 	struct exynos_cpufreq_domain *domain;
@@ -702,7 +702,7 @@ static struct kobj_attribute cpucl0volt_table =
 __ATTR(cpucl0volt_table, 0644 , show_cpucl0volt_table, store_cpucl0volt_table);
 static struct kobj_attribute cpucl1volt_table =
 __ATTR(cpucl1volt_table, 0644 , show_cpucl1volt_table, store_cpucl1volt_table);
-static struct kobj_attribute cpufreq_min_limit =
+static struct global_attr cpufreq_min_limit =
 __ATTR(cpufreq_min_limit, 0644,
 		show_cpufreq_min_limit, store_cpufreq_min_limit);
 static struct global_attr cpufreq_min_limit_wo_boost =
