@@ -108,8 +108,8 @@ CR_CLANG_URL=https://android.googlesource.com/platform/prebuilts/clang/host/linu
 CR_CLANG=$CR_TC/clang-18.0.1-r522817
 fi
 if [ $CR_COMPILER = "4" ]; then
-CR_CLANG_URL=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/llvm-r530567/clang-r530567.tar.gz
-CR_CLANG=$CR_TC/clang-19.0.0-r530567
+CR_CLANG_URL=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz
+CR_CLANG=$CR_TC/clang-20.0.0-r547379
 fi
 if [ $CR_COMPILER = "5" ]; then
 CR_CLANG_URL=https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/05012024/neutron-clang-05012024.tar.zst
@@ -669,10 +669,10 @@ echo "----------------------------------------------"
 read -p "Please select your build target (1-8) > " CR_TARGET
 echo "----------------------------------------------"
 echo " "
-echo "1) Clang 12 (LLVM +LTO)"
-echo "2) Clang 14 (LLVM +LTO)"
-echo "3) Clang 18 (LLVM +LTO PGO Bolt MLGO Polly)"
-echo "4) Clang 19 (^)"
+echo "1) Google Clang 12 (LLVM +LTO)"
+echo "2) Google Clang 14 (LLVM +LTO)"
+echo "3) Google Clang 18 (LLVM +LTO PGO Bolt MLGO Polly)"
+echo "4) Google Clang 20 (LLVM +LTO PGO Bolt MLGO Polly)"
 echo "5) Neutron Clang 18 (^)"
 echo "6) Neutron Clang 19 (^)"
 echo "7) Neutron Clang 20 (BETA)"
