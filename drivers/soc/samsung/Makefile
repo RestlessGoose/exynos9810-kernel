@@ -65,4 +65,4 @@ obj-$(CONFIG_EXYNOS_HDCP2)  += exynos-hdcp/
 obj-$(CONFIG_ARCH_EXYNOS)	+= secmem.o
 
 # ICE
-obj-y       += icedata/
+obj-$(CONFIG_ICE)       += icedata/

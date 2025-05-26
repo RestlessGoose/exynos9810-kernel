@@ -1,1 +1,1 @@
-obj-y += icedata.o
+obj-$(CONFIG_ICE) += icedata.o

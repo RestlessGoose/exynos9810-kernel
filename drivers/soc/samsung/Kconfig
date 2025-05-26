@@ -25,6 +25,10 @@ config ECT_DUMP
 	default n
 	depends on ECT
 
+config ICE
+	bool "Enable IceCold Engine automatic undervolt"
+	default n
+
 config EXYNOS_PD
 	bool "Exynos PM domain Support"
 	depends on ARCH_EXYNOS

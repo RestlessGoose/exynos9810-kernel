@@ -12,8 +12,10 @@
 #include "vclk.h"
 #include "ra.h"
 
+#if defined(CONFIG_ICE)
 #include "../icedata/icedata.h"
 #include "../icedata/icestatics.h"
+#endif
 
 #define FVMAP_SIZE		(SZ_8K)
 #define STEP_UV			(6250)
@@ -586,8 +588,9 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 			cal_dfs_set_volt_margin(i | ACPM_VCLK_TYPE, margin);
 
 		// ICE: Apply offset table
-
+		#if defined(CONFIG_ICE)
 		pr_info("[ICE] Applying undervolt offset tables...\n");
+		#endif
 
 		for (j = 0; j < fvmap_header[i].num_of_lv; j++) {
 			if (strcmp(vclk->name, "dvfs_mif") == 0) {
@@ -598,7 +601,7 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 				if (old->table[j].rate == 2094000)
 					old->table[j].volt = 800000;
 			}
-
+			#if defined(CONFIG_ICE)
 			if (strcmp(vclk->name, "dvfs_cpucl0") == 0) {
 				if (old->table[j].rate == ice_cl0_freqs[j])
 					old->table[j].volt = old->table[j].volt - (ice_cl0[(j * 16) + ice_asv_scores_cl0] * ice_uv_step);
@@ -615,11 +618,14 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 				if (old->table[j].rate == ice_cp_freqs[j])
 					old->table[j].volt = old->table[j].volt - (ice_cp[(j * 16) + ice_asv_scores_cp] * ice_uv_step);
 			}
+			#endif
 
 			new->table[j].rate = old->table[j].rate;
 			new->table[j].volt = old->table[j].volt;
 		}
+		#if defined(CONFIG_ICE)
 		pr_info("[ICE] Undervolt offsets applied.\n");
+		#endif
 
 		for (j = 0; j < fvmap_header[i].num_of_pll; j++) {
 			clks = sram_base + fvmap_header[i].o_members;
