@@ -41,7 +41,7 @@ CR_DTB=$CR_DIR/arch/$CR_ARCH/boot/dtb.img
 CR_DEFCONFIG=$CR_DIR/arch/$CR_ARCH/configs
 # Kernel Name and Version
 CR_VERSION=v1.4.1
-CR_NAME=CrownTrail-Kernel
+CR_NAME=CrownTrail
 # Thread count
 CR_JOBS=$(nproc --all)
 # Target Android version
@@ -571,23 +571,6 @@ echo " Packing ZIP "
 CR_BASE_KERNEL=$CR_OUTZIP/floyd/G960F-kernel
 CR_BASE_DTB=$CR_OUTZIP/floyd/G960F-dtb
 
-# Check packages
-if ! dpkg-query -W -f='${Status}' bsdiff  | grep "ok installed"; then 
-	echo "bsdiff is missing and is required for ZIP Packaging."
-	read -p "Do you want to install bsdiff? This requires sudo privileges. (y/n) > " INSTALL_BSDIFF
-	if [ "$INSTALL_BSDIFF" = "y" ]; then
-		echo "installing bsdiff."
-		sudo apt update
-		sudo apt install -y bsdiff
-		if ! dpkg-query -W -f='${Status}' bsdiff | grep "ok installed"; then
-			echo "Failed to install bsdiff. Please try installing it manually."
-			#exit 0;
-		fi
-	else
-		echo "Please install bsdiff with sudo apt install bsdiff and try again."
-		#exit 0;
-	fi
-fi
 
 # Initalize with base image (Starlte)
 if [ "$CR_TARGET" = "1" ]; then # Always must run ONCE during BUILD_ALL otherwise fail. Setup directories
