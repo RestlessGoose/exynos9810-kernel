@@ -53,7 +53,7 @@ CONFIG_INCREMENTAL_FS=y
 
 # Brightness mod for OneUI7
 
-CONFIG_ONEUI7_WORKAROUND=y
+# CONFIG_ONEUI7_WORKAROUND is not set
 
 # CrownTrail Features
 
