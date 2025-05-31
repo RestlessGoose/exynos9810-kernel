@@ -1184,11 +1184,7 @@ static int __init cpufreq_read_cpu_max_c1(char *cpu_max_c1)
 }
 __setup("cpu_max_c1=", cpufreq_read_cpu_max_c1);
 
-<<<<<<< HEAD
-unsigned long arg_cpu_max_c2 = 2002000;
-=======
 unsigned long arg_cpu_max_c2 = 2704000;
->>>>>>> parent of 4b6e151b34c6 (dts/defconfig/exynos-acme: Nuke Hotplug)
 
 static __init int cpufreq_read_cpu_max_c2(char *cpu_max_c2)
 {
