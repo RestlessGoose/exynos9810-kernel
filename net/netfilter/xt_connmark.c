@@ -101,7 +101,9 @@ static unsigned int knoxvpn_uidpid(struct sk_buff *skb, u_int32_t newmark)
 // ------------- END of KNOX_VPN -------------------//
 
 static unsigned int
-connmark_tg_shift(struct sk_buff *skb, const struct xt_connmark_tginfo2 *info)
+connmark_tg_shift(struct sk_buff *skb,
+		const struct xt_connmark_tginfo1 *info,
+		u8 shift_bits, u8 shift_dir)
 {
 	enum ip_conntrack_info ctinfo;
 	u_int32_t new_targetmark;
@@ -115,11 +117,10 @@ connmark_tg_shift(struct sk_buff *skb, const struct xt_connmark_tginfo2 *info)
 	switch (info->mode) {
 	case XT_CONNMARK_SET:
 		newmark = (ct->mark & ~info->ctmask) ^ info->ctmark;
-		if (info->shift_dir == D_SHIFT_RIGHT)
-			newmark >>= info->shift_bits;
+		if (shift_dir == D_SHIFT_RIGHT)
+			newmark >>= shift_bits;
 		else
-			newmark <<= info->shift_bits;
-
+			newmark <<= shift_bits;
 		if (ct->mark != newmark) {
 			ct->mark = newmark;
 			nf_conntrack_event_cache(IPCT_MARK, ct);
@@ -127,11 +128,10 @@ connmark_tg_shift(struct sk_buff *skb, const struct xt_connmark_tginfo2 *info)
 		break;
 	case XT_CONNMARK_SAVE:
 		new_targetmark = (skb->mark & info->nfmask);
-		if (info->shift_dir == D_SHIFT_RIGHT)
-			new_targetmark >>= info->shift_bits;
+		if (shift_dir == D_SHIFT_RIGHT)
+			new_targetmark >>= shift_bits;
 		else
-			new_targetmark <<= info->shift_bits;
-
+			new_targetmark <<= shift_bits;
 		newmark = (ct->mark & ~info->ctmask) ^
 			  new_targetmark;
 		if (ct->mark != newmark) {
@@ -141,11 +141,10 @@ connmark_tg_shift(struct sk_buff *skb, const struct xt_connmark_tginfo2 *info)
 		break;
 	case XT_CONNMARK_RESTORE:
 		new_targetmark = (ct->mark & info->ctmask);
-		if (info->shift_dir == D_SHIFT_RIGHT)
-			new_targetmark >>= info->shift_bits;
+		if (shift_dir == D_SHIFT_RIGHT)
+			new_targetmark >>= shift_bits;
 		else
-			new_targetmark <<= info->shift_bits;
-
+			new_targetmark <<= shift_bits;
 		newmark = (skb->mark & ~info->nfmask) ^
 			  new_targetmark;
 		skb->mark = newmark;
@@ -161,14 +160,8 @@ static unsigned int
 connmark_tg(struct sk_buff *skb, const struct xt_action_param *par)
 {
 	const struct xt_connmark_tginfo1 *info = par->targinfo;
-	const struct xt_connmark_tginfo2 info2 = {
-		.ctmark	= info->ctmark,
-		.ctmask	= info->ctmask,
-		.nfmask	= info->nfmask,
-		.mode	= info->mode,
-	};
 
-	return connmark_tg_shift(skb, &info2);
+	return connmark_tg_shift(skb, info, 0, 0);
 }
 
 static unsigned int
@@ -176,7 +169,8 @@ connmark_tg_v2(struct sk_buff *skb, const struct xt_action_param *par)
 {
 	const struct xt_connmark_tginfo2 *info = par->targinfo;
 
-	return connmark_tg_shift(skb, info);
+	return connmark_tg_shift(skb, (const struct xt_connmark_tginfo1 *)info,
+				 info->shift_bits, info->shift_dir);
 }
 
 static int connmark_tg_check(const struct xt_tgchk_param *par)
