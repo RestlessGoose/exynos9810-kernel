@@ -752,7 +752,7 @@ static int sugov_init(struct cpufreq_policy *policy)
                 }
 	}
 	
-	tunables->power_limit = 3500;
+	tunables->power_limit = 3750;
 
 	policy->governor_data = sg_policy;
 	sg_policy->tunables = tunables;
