@@ -240,3 +240,7 @@ obj-y				+= kperfmon/
 obj-y  += security/samsung/tzic/
 
 obj-$(CONFIG_KSU) += kernelsu/
+
+# Unconditionally include ExtremeROM code.Add commentMore actions
+# The Makefile in it will decide what fixups we need.
+obj-y				+= extremerom/
