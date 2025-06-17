@@ -9559,7 +9559,7 @@
 		devfreq_type = "disp";
 		devfreq_domain_name = "dvfs_disp";
 		use_delay_time = "false";
-		freq_info = <640000 640000 400000 134000 640000 400000>;
+		freq_info = <640000 200000 400000 134000 640000 400000>;
 		boot_info = <0x28 200000>;
 		use_get_dev = "false";
 		polling_ms = <0x0>;
