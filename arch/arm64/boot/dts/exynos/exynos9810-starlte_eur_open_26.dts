@@ -4482,7 +4482,7 @@
 			input_booster,label = "touch";
 			input_booster,type = <2>;	/* BOOSTER_DEVICE_TOUCH */
 			/* Time table */
-			input_booster,head_time = <50>;
+			input_booster,head_time = <30>;
 			input_booster,tail_time = <300>;
 
 			/* Frequency table */
