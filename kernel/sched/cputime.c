@@ -630,7 +630,7 @@ drop_precision:
  *
  * Assuming that rtime_i+1 >= rtime_i.
  */
-static void cputime_adjust(struct task_cputime *curr,
+void cputime_adjust(struct task_cputime *curr,
 			   struct prev_cputime *prev,
 			   cputime_t *ut, cputime_t *st)
 {

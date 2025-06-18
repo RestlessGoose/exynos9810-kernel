@@ -758,7 +758,7 @@ struct rq {
 #ifdef CONFIG_SCHED_HRTICK
 #ifdef CONFIG_SMP
 	int hrtick_csd_pending;
-	call_single_data_t hrtick_csd;
+	struct call_single_data hrtick_csd;
 #endif
 	struct hrtimer hrtick_timer;
 #endif

@@ -40,6 +40,8 @@
 #include "tune.h"
 #include "walt.h"
 
+#include "sched-pelt.h"
+
 /*
  * Targeted preemption latency for CPU-bound tasks:
  * (default: 5ms * (1 + ilog(ncpus)), units: nanoseconds)
@@ -720,7 +722,7 @@ static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 #ifdef CONFIG_SMP
 
-#include "sched-pelt.h"
+
 
 static int select_idle_sibling(struct task_struct *p, int prev_cpu, int cpu);
 static unsigned long task_h_load(struct task_struct *p);
