@@ -5021,7 +5021,7 @@
 			reg = <0x0 0x0>;
 			enable-method = "psci";
 			cpu-idle-states = <0x3d>;
-			sched-energy-costs = <0x3e 0x3f>;
+			sched-energy-data = <&ANANKE_ENERGY>;
 			linux,phandle = <0x1b>;
 			phandle = <0x1b>;
 		};
@@ -5032,7 +5032,7 @@
 			reg = <0x0 0x1>;
 			enable-method = "psci";
 			cpu-idle-states = <0x3d>;
-			sched-energy-costs = <0x3e 0x3f>;
+			sched-energy-data = <&ANANKE_ENERGY>;
 			linux,phandle = <0x1d>;
 			phandle = <0x1d>;
 		};
@@ -5043,7 +5043,7 @@
 			reg = <0x0 0x2>;
 			enable-method = "psci";
 			cpu-idle-states = <0x3d>;
-			sched-energy-costs = <0x3e 0x3f>;
+			sched-energy-data = <&ANANKE_ENERGY>;
 			linux,phandle = <0x1f>;
 			phandle = <0x1f>;
 		};
@@ -5054,7 +5054,7 @@
 			reg = <0x0 0x3>;
 			enable-method = "psci";
 			cpu-idle-states = <0x3d>;
-			sched-energy-costs = <0x3e 0x3f>;
+			sched-energy-data = <&ANANKE_ENERGY>;
 			linux,phandle = <0x21>;
 			phandle = <0x21>;
 		};
@@ -5065,7 +5065,7 @@
 			reg = <0x0 0x100>;
 			enable-method = "psci";
 			cpu-idle-states = <0x40>;
-			sched-energy-costs = <0x41 0x42>;
+			sched-energy-data = <&MEERKAT_ENERGY>;
 			linux,phandle = <0x23>;
 			phandle = <0x23>;
 		};
@@ -5076,7 +5076,7 @@
 			reg = <0x0 0x101>;
 			enable-method = "psci";
 			cpu-idle-states = <0x40>;
-			sched-energy-costs = <0x41 0x42>;
+			sched-energy-data = <&MEERKAT_ENERGY>;
 			linux,phandle = <0x25>;
 			phandle = <0x25>;
 		};
@@ -5087,7 +5087,7 @@
 			reg = <0x0 0x102>;
 			enable-method = "psci";
 			cpu-idle-states = <0x40>;
-			sched-energy-costs = <0x41 0x42>;
+			sched-energy-data = <&MEERKAT_ENERGY>;
 			linux,phandle = <0x27>;
 			phandle = <0x27>;
 		};
@@ -5098,7 +5098,7 @@
 			reg = <0x0 0x103>;
 			enable-method = "psci";
 			cpu-idle-states = <0x40>;
-			sched-energy-costs = <0x41 0x42>;
+			sched-energy-data = <&MEERKAT_ENERGY>;
 			linux,phandle = <0x29>;
 			phandle = <0x29>;
 		};
@@ -5131,34 +5131,76 @@
 			};
 		};
 
-		energy-costs {
-
-			core-core0 {
-				busy-cost-data = <0xd4 0xd7 0xe6 0xe1 0x107 0xfa 0x130 0x121 0x155 0x155 0x17a 0x1af 0x19f 0x205 0x1bf 0x25d 0x209 0x362 0x233 0x40d 0x258 0x4da 0x27d 0x5ac 0x2ab 0x706 0x2cd 0x7e9 0x2eb 0xa78 0x335 0xc6c 0x376 0xf82 0x3ad 0x12fd 0x3bf 0x15f7 0x3f7 0x190c 0x400 0x1d6d>;
-				idle-cost-data = <0xa 0x0 0x0>;
-				linux,phandle = <0x41>;
-				phandle = <0x41>;
+		energy-data {
+			ANANKE_ENERGY: ananke-energy {
+				capacity-mips = <272>;
+				power-coefficient = <160>;
+				// linux,phandle = <0x41>;
+				// phandle = <0x41>;
 			};
 
-			core-core1 {
-				busy-cost-data = <0x2e 0x16 0x3d 0x1f 0x48 0x27 0x54 0x33 0x60 0x3f 0x6b 0x4d 0x7f 0x69 0x94 0x95 0xab 0xe7 0xb6 0xf0 0xc6 0xfa>;
-				idle-cost-data = <0x1 0x0 0x0>;
-				linux,phandle = <0x3e>;
-				phandle = <0x3e>;
+			MEERKAT_ENERGY: meerkat-energy {
+				capacity-mips = <785>;
+				power-coefficient = <800>;
+				// linux,phandle = <0x3e>;
+				// phandle = <0x3e>;
+			};
+		};
+
+		ems {
+			/* Ontime Migration */
+			ontime {
+				/* little cores */
+				coregroup0 {
+					lower-boundary = <0>;
+					upper-boundary = <42>;
+					coverage-ratio = <100>;
+				};
+				/* big cores */
+				coregroup1 {
+					lower-boundary = <7>;
+					upper-boundary = <100>;
+					coverage-ratio = <75>;
+				};
 			};
 
-			cluster-core0 {
-				busy-cost-data = <0xd4 0x3d 0xe6 0x40 0x107 0x46 0x130 0x4c 0x155 0x5d 0x17a 0x7b 0x19f 0x97 0x1bf 0xb5 0x209 0x10c 0x233 0x145 0x258 0x189 0x27d 0x1cf 0x2ab 0x243 0x2cd 0x28e 0x2eb 0x369 0x335 0x40f 0x376 0x516 0x3ad 0x640 0x3bf 0x73e 0x3f7 0x845 0x400 0x9ba>;
-				idle-cost-data = <0x10c 0x10c 0x0>;
-				linux,phandle = <0x42>;
-				phandle = <0x42>;
+			/* Load Balance Trigger */
+			#define DEFAULT_RATIO	80
+			lbt {
+				overutil-level0 {
+					cpus =	"0-3",
+					"4-7";
+					ratio =	<25>,
+					<30>;
+				};
+				overutil-level1 {
+					cpus =	"0-7";
+					ratio =	<DEFAULT_RATIO>;
+				};
 			};
 
-			cluster-core1 {
-				busy-cost-data = <0x2e 0x1 0x3d 0x3 0x48 0x4 0x54 0x7 0x60 0x9 0x6b 0xc 0x7f 0x12 0x94 0x1a 0xab 0x2b 0xb6 0x35 0xc6 0x3a>;
-				idle-cost-data = <0x5 0x5 0x0>;
-				linux,phandle = <0x3f>;
-				phandle = <0x3f>;
+			/* FRT Migration */
+			frt {
+				/* little cores */
+				coregroup0 {
+					coverage-ratio = <30>;
+					active-ratio = <25>;
+				};
+				/* big cores */
+				coregroup1 {
+					coverage-ratio = <30>;
+					active-ratio = <5>;
+				};
+			};
+
+			prefer-perf-service {
+				prefer-perf0 {
+					boost = <1>;
+					light-task-threshold = <10>;
+					prefer-cpus = "4-7", "0-3";
+				};
+				// linux,phandle = <0x3f>;
+				// phandle = <0x3f>;
 			};
 		};
 	};
@@ -10659,19 +10701,19 @@
 		domain@0 {
 			device_type = "freqvar-tune";
 			shared-cpus = "0-3";
-			boost_table = <0x64 0x91ff0 0x3c 0xae8f8 0x1e 0xcb200 0x14 0xe7b08 0xa 0x101148 0x0>;
-			up_rate_limit_table = <0x5>;
-			down_rate_limit_table = <0x5>;
+			boost_table = < 0 >;
+			up_rate_limit_table = < 5000 >;
+			down_rate_limit_table = < 5000 >;
 			upscale_ratio_table = <0x50>;
 		};
 
 		domain@1 {
 			device_type = "freqvar-tune";
 			shared-cpus = "4-7";
-			boost_table = <0x14 0xd1790 0xf 0xeadd0 0x5 0x133dc8 0x0>;
-			up_rate_limit_table = <0x5>;
-			down_rate_limit_table = <0x5>;
-			upscale_ratio_table = <0x32 0xeadd0 0x41 0x166a48 0x50>;
+			boost_table = < 0 >;
+			up_rate_limit_table = < 5000 >;
+			down_rate_limit_table = < 5000 >;
+			upscale_ratio_table = < 80 1469000 100 >;
 		};
 	};
 
