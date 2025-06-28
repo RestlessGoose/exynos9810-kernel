@@ -29,7 +29,7 @@ static DEFINE_MUTEX(cmd_lock);
 struct panel_state *panel_state;
 
 bool display_on = true;
-bool is_display_on()
+bool is_display_on(void)
 {
 	return display_on;
 }
