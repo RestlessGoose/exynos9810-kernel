@@ -23,8 +23,6 @@ extern unsigned long arg_cpu_max_c1;
 extern unsigned long arg_cpu_min_c1;
 extern unsigned long arg_cpu_max_c2;
 extern unsigned long arg_cpu_min_c2;
-extern unsigned long arg_gpu_min;
-extern unsigned long arg_gpu_max;
 extern unsigned long arg_mif_min;
 extern unsigned long arg_mif_max;
 
@@ -888,10 +886,6 @@ static int ect_parse_gen_param_table(int parser_version, void *address, struct e
 			size->parameter[i * size->num_of_col + MINMAX_MIN_FREQ] = arg_mif_min / 1000;
 			size->parameter[i * size->num_of_col + MINMAX_MAX_FREQ] = arg_mif_max / 1000;
 			size->parameter[i * size->num_of_col + MINMAX_BOOT_FREQ] = 1794;
-		} else if (ect_strcmp(size->table_name, "MINMAX_dvfs_g3d") == 0) {
-			size->parameter[i * size->num_of_col + MINMAX_MIN_FREQ] = arg_gpu_min / 1000;
-			size->parameter[i * size->num_of_col + MINMAX_MAX_FREQ] = arg_gpu_max / 1000;
-			size->parameter[i * size->num_of_col + MINMAX_BOOT_FREQ] = 598;
 		} else if (ect_strcmp(size->table_name, "MINMAX_dvfs_disp_evt1") == 0) {
 			size->parameter[i * size->num_of_col + MINMAX_MIN_FREQ] = arg_disp_min / 1000;
 			size->parameter[i * size->num_of_col + MINMAX_MAX_FREQ] = arg_disp_max / 1000;
