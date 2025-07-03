@@ -33,7 +33,7 @@ CONFIG_WIREGUARD=y
 
 
 #
-# Scheduler features
+# FAIR Scheduler tunables
 #
 # CONFIG_PELT_UTIL_HALFLIFE_32 is not set
 CONFIG_PELT_UTIL_HALFLIFE_16=y
