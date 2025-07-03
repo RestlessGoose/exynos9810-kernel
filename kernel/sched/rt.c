@@ -14,6 +14,7 @@
 #include "walt.h"
 
 #include <trace/events/sched.h>
+#include "sched-pelt.h"
 
 #ifdef CONFIG_SCHED_USE_FLUID_RT
 struct frt_dom {
@@ -637,7 +638,6 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 
 #ifdef CONFIG_SMP
 
-#include "sched-pelt.h"
 #define entity_is_task(se)	(!se->my_q)
 
 extern u64 decay_load(u64 val, u64 n);

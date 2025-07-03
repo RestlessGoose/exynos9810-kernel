@@ -30,7 +30,7 @@ static const u32 __accumulated_sum_N32[] = {
 
 #endif
 
-//#ifdef CONFIG_PELT_UTIL_HALFLIFE_16
+#ifdef CONFIG_PELT_UTIL_HALFLIFE_16
 static const u32 runnable_avg_yN_inv[] = {
 	0xffffffff,0xf5257d14,0xeac0c6e6,0xe0ccdeeb,
 	0xd744fcc9,0xce248c14,0xc5672a10,0xbd08a39e,
@@ -56,7 +56,7 @@ static const u32 __accumulated_sum_N32[] = {
 	 45461, 45461, 45461, 45461,
 };
 
-//#endif
+#endif
 
 #ifdef CONFIG_PELT_UTIL_HALFLIFE_8
 static const u32 runnable_avg_yN_inv[] = {
