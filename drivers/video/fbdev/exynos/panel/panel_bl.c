@@ -770,9 +770,6 @@ static int panel_set_brightness(struct backlight_device *bd)
 
 	mutex_lock(&panel_bl->lock);
 	mutex_lock(&panel->op_lock);
-#ifdef CONFIG_ONEUI7_WORKAROUND
- 	brightness *= 100;
-#endif
 	id = panel_bl->props.id;
 	if (!is_valid_brightness(panel_bl, brightness)) {
 		pr_alert("Brightness %d is out of range\n", brightness);
