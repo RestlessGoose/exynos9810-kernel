@@ -4950,7 +4950,7 @@
 			compatible = "arm,ananke", "arm,armv8";
 			reg = <0x0 0x0>;
 			enable-method = "psci";
-			cpu-idle-states = <0x3d>;
+			cpu-idle-states = <&ANANKE_CPU_SLEEP>;
 			sched-energy-data = <&ANANKE_ENERGY>;
 			linux,phandle = <0x1b>;
 			phandle = <0x1b>;
@@ -4961,7 +4961,7 @@
 			compatible = "arm,ananke", "arm,armv8";
 			reg = <0x0 0x1>;
 			enable-method = "psci";
-			cpu-idle-states = <0x3d>;
+			cpu-idle-states = <&ANANKE_CPU_SLEEP>;
 			sched-energy-data = <&ANANKE_ENERGY>;
 			linux,phandle = <0x1d>;
 			phandle = <0x1d>;
@@ -4972,7 +4972,7 @@
 			compatible = "arm,ananke", "arm,armv8";
 			reg = <0x0 0x2>;
 			enable-method = "psci";
-			cpu-idle-states = <0x3d>;
+			cpu-idle-states = <&ANANKE_CPU_SLEEP>;
 			sched-energy-data = <&ANANKE_ENERGY>;
 			linux,phandle = <0x1f>;
 			phandle = <0x1f>;
@@ -4983,7 +4983,7 @@
 			compatible = "arm,ananke", "arm,armv8";
 			reg = <0x0 0x3>;
 			enable-method = "psci";
-			cpu-idle-states = <0x3d>;
+			cpu-idle-states = <&ANANKE_CPU_SLEEP>;
 			sched-energy-data = <&ANANKE_ENERGY>;
 			linux,phandle = <0x21>;
 			phandle = <0x21>;
@@ -4994,7 +4994,7 @@
 			compatible = "arm,meerkat", "arm,armv8";
 			reg = <0x0 0x100>;
 			enable-method = "psci";
-			cpu-idle-states = <0x40>;
+			cpu-idle-states = <&MEERKAT_CPU_SLEEP>;
 			sched-energy-data = <&MEERKAT_ENERGY>;
 			linux,phandle = <0x23>;
 			phandle = <0x23>;
@@ -5005,7 +5005,7 @@
 			compatible = "arm,meerkat", "arm,armv8";
 			reg = <0x0 0x101>;
 			enable-method = "psci";
-			cpu-idle-states = <0x40>;
+			cpu-idle-states = <&MEERKAT_CPU_SLEEP>;
 			sched-energy-data = <&MEERKAT_ENERGY>;
 			linux,phandle = <0x25>;
 			phandle = <0x25>;
@@ -5016,7 +5016,7 @@
 			compatible = "arm,meerkat", "arm,armv8";
 			reg = <0x0 0x102>;
 			enable-method = "psci";
-			cpu-idle-states = <0x40>;
+			cpu-idle-states = <&MEERKAT_CPU_SLEEP>;
 			sched-energy-data = <&MEERKAT_ENERGY>;
 			linux,phandle = <0x27>;
 			phandle = <0x27>;
@@ -5027,7 +5027,7 @@
 			compatible = "arm,meerkat", "arm,armv8";
 			reg = <0x0 0x103>;
 			enable-method = "psci";
-			cpu-idle-states = <0x40>;
+			cpu-idle-states = <&MEERKAT_CPU_SLEEP>;
 			sched-energy-data = <&MEERKAT_ENERGY>;
 			linux,phandle = <0x29>;
 			phandle = <0x29>;
@@ -5036,7 +5036,7 @@
 		idle-states {
 			entry-method = "arm,psci";
 
-			bootcl-cpu-sleep {
+			ANANKE_CPU_SLEEP: ananke-cpu-sleep {
 				idle-state-name = "c2";
 				compatible = "exynos,idle-state";
 				arm,psci-suspend-param = <0x10000>;
@@ -5048,7 +5048,7 @@
 				phandle = <0x3d>;
 			};
 
-			nobootcl-cpu-sleep {
+			MEERKAT_CPU_SLEEP: meerkat-cpu-sleep {
 				idle-state-name = "c2";
 				compatible = "exynos,idle-state";
 				arm,psci-suspend-param = <0x10000>;
