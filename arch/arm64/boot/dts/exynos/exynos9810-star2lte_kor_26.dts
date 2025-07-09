@@ -4987,6 +4987,53 @@
 		#address-cells = <0x2>;
 		#size-cells = <0x0>;
 
+		cpu-map {
+
+			cluster0 {
+
+				coregroup0 {
+
+					core0 {
+						cpu = <0x1b>;
+					};
+
+					core1 {
+						cpu = <0x1d>;
+					};
+
+					core2 {
+						cpu = <0x1f>;
+					};
+
+					core3 {
+						cpu = <0x21>;
+					};
+				};
+			};
+
+			cluster1 {
+
+				coregroup0 {
+
+					core0 {
+						cpu = <0x23>;
+					};
+
+					core1 {
+						cpu = <0x25>;
+					};
+
+					core2 {
+						cpu = <0x27>;
+					};
+
+					core3 {
+						cpu = <0x29>;
+					};
+				};
+			};
+		};
+
 		cpu@0000 {
 			device_type = "cpu";
 			compatible = "arm,ananke", "arm,armv8";
