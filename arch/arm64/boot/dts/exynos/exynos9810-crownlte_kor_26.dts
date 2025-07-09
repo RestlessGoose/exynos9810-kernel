@@ -5002,14 +5002,6 @@
 		#address-cells = <0x2>;
 		#size-cells = <0x0>;
 
-		ehmp {
-			top-overutil = <0xffffffff 0xffffffff 0xffffffff 0xffffffff 0xffffffff 0xffffffff 0xffffffff 0xffffffff>;
-			bot-overutil = <0x23 0x23 0x23 0x23 0x23 0x23 0x23 0x23>;
-			up-threshold = <0x4f>;
-			down-threshold = <0x80>;
-			min-residency-us = <0x2000>;
-		};
-
 		cpu@0000 {
 			device_type = "cpu";
 			compatible = "arm,ananke", "arm,armv8";
