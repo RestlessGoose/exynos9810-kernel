@@ -10998,6 +10998,9 @@
 		id = <0x0>;
 		sensors = <0x5e>;
 		sensing_mode = "balance";
+		hotplug_enable = <0x1>;
+		hotplug_in_threshold = <0x5b>;
+		hotplug_out_threshold = <0x60>;
 		#thermal-sensor-cells = <0x0>;
 		samsung,tmu_gain = <0x0>;
 		samsung,tmu_reference_voltage = <0x0>;
