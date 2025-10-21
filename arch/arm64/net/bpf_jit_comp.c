@@ -897,7 +897,6 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 {
 	struct bpf_prog *tmp, *orig_prog = prog;
 	struct bpf_binary_header *header;
-	bool was_classic = bpf_prog_was_classic(prog);
 	struct arm64_jit_data *jit_data;
 	bool tmp_blinded = false;
 	bool extra_pass = false;
