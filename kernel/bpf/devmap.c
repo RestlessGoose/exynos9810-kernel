@@ -80,6 +80,8 @@ struct bpf_dtab {
 	u32 n_buckets;
 };
 
+static void dev_map_flush_old(struct bpf_dtab_netdev *dev);
+
 static DEFINE_SPINLOCK(dev_map_lock);
 static LIST_HEAD(dev_map_list);
 
@@ -227,6 +229,28 @@ static void dev_map_free(struct bpf_map *map)
 		dev_put(dev->dev);
 		kfree(dev);
 	}
+
+	/* DEVMAP_HASH stores entries in dev_index_head, not netdev_map[] */
+	if (dtab->dev_index_head) {
+		struct bpf_dtab_netdev *dev;
+		struct hlist_node *tmp;
+		unsigned long flags;
+		int b;
+
+		spin_lock_irqsave(&dtab->index_lock, flags);
+		for (b = 0; b < dtab->n_buckets; b++) {
+			hlist_for_each_entry_safe(dev, tmp,
+									  &dtab->dev_index_head[b],
+									  index_hlist) {
+				hlist_del_init(&dev->index_hlist);
+				dev_map_flush_old(dev);
+				dev_put(dev->dev);
+				kfree(dev);
+			}
+		}
+		spin_unlock_irqrestore(&dtab->index_lock, flags);
+	}
+
 
 	free_percpu(dtab->flush_needed);
 	bpf_map_area_free(dtab->netdev_map);
@@ -606,6 +630,29 @@ static int dev_map_notification(struct notifier_block *notifier,
 		 */
 		rcu_read_lock();
 		list_for_each_entry_rcu(dtab, &dev_map_list, list) {
+			/* DEVMAP_HASH: entries live in dev_index_head buckets */
+			if (dtab->dev_index_head) {
+				struct bpf_dtab_netdev *dev;
+				struct hlist_node *tmp;
+				struct hlist_head *head;
+				unsigned long flags;
+
+				head = dev_map_index_hash(dtab, netdev->ifindex);
+
+				spin_lock_irqsave(&dtab->index_lock, flags);
+				hlist_for_each_entry_safe(dev, tmp, head, index_hlist) {
+					if (dev->dev->ifindex != netdev->ifindex)
+						continue;
+
+					dtab->items--;
+					hlist_del_init_rcu(&dev->index_hlist);
+					call_rcu(&dev->rcu, __dev_map_entry_free);
+				}
+				spin_unlock_irqrestore(&dtab->index_lock, flags);
+
+				/* don't fall through to netdev_map[] scanning */
+				continue;
+			}
 			for (i = 0; i < dtab->map.max_entries; i++) {
 				struct bpf_dtab_netdev *dev, *odev;
 
