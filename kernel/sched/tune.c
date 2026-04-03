@@ -677,6 +677,266 @@ int schedtune_prefer_perf(struct task_struct *p)
 	return prefer_perf;
 }
 
+static inline void
+check_need_group_balance(int group_idx, struct group_balancer *gb)
+{
+	int heaviest_ratio;
+
+	if (!gb->util) {
+		gb->imbalance_count = 0;
+		gb->need_balance = false;
+
+		goto out;
+	}
+
+	heaviest_ratio = gb->heaviest_util * 100 / gb->util;
+
+	if (gb->need_balance) {
+		if (gb->util < gb->threshold || heaviest_ratio < gb->balance_ratio) {
+			gb->imbalance_count = 0;
+			gb->need_balance = false;
+		}
+
+		goto out;
+	}
+
+	if (gb->util >= gb->threshold && heaviest_ratio > gb->imbalance_ratio) {
+		gb->imbalance_count++;
+
+		if (gb->imbalance_count >= gb->imbalance_duration)
+			gb->need_balance = true;
+	} else {
+		gb->imbalance_count = 0;
+	}
+
+	out:
+	trace_sched_tune_check_group_balance(group_idx,
+										 gb->imbalance_count, gb->need_balance);
+}
+
+static void __schedtune_group_util_update(struct schedtune *st)
+{
+	struct group_balancer *gb = &st->gb;
+	unsigned long now = cpu_rq(0)->clock_task;
+	struct css_task_iter it;
+	struct task_struct *p;
+	struct task_struct *heaviest_p = NULL;
+	unsigned long util_sum = 0;
+	unsigned long heaviest_util = 0;
+	unsigned int total = 0, accumulated = 0;
+
+	if (!raw_spin_trylock(&gb->lock))
+		return;
+
+	if (!gb->update_interval)
+		goto out;
+
+	if (time_before(now, gb->next_update_time))
+		goto out;
+
+	css_task_iter_start(&st->css, 0, &it);
+	while ((p = css_task_iter_next(&it))) {
+		unsigned long clock_task, delta, util;
+
+		total++;
+
+		clock_task = task_rq(p)->clock_task;
+		delta = clock_task - p->se.avg.last_update_time;
+		if (p->se.avg.last_update_time && delta > gb->window)
+			continue;
+
+		util = p->se.avg.util_avg;
+		if (util > heaviest_util) {
+			heaviest_util = util;
+			heaviest_p = p;
+		}
+
+		util_sum += p->se.avg.util_avg;
+		accumulated++;
+	}
+	css_task_iter_end(&it);
+
+	gb->util = util_sum;
+	gb->heaviest_util = heaviest_util;
+	gb->next_update_time = now + gb->update_interval;
+
+	/* if there is no task in group, heaviest_p is always NULL */
+	if (heaviest_p)
+		trace_sched_tune_grouputil_update(st->idx, total, accumulated,
+										  gb->util, heaviest_p, gb->heaviest_util);
+
+		check_need_group_balance(st->idx, gb);
+	out:
+	raw_spin_unlock(&gb->lock);
+}
+
+void schedtune_group_util_update(void)
+{
+	int idx;
+
+	if (!unlikely(schedtune_initialized))
+		return;
+
+	rcu_read_lock();
+
+	for (idx = 1; idx < BOOSTGROUPS_COUNT; idx++) {
+		struct schedtune *st = allocated_group[idx];
+
+		if (!st)
+			continue;
+		__schedtune_group_util_update(st);
+	}
+
+	rcu_read_unlock();
+}
+
+static u64
+gb_util_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->gb.util;
+}
+
+static u64
+gb_heaviest_ratio_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	if (!st->gb.util)
+		return 0;
+
+	return st->gb.heaviest_util * 100 / st->gb.util;
+}
+
+static u64
+gb_threshold_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->gb.threshold;
+}
+
+static int
+gb_threshold_write(struct cgroup_subsys_state *css, struct cftype *cft,
+				   u64 threshold)
+{
+	struct schedtune *st = css_st(css);
+	struct group_balancer *gb = &st->gb;
+
+	gb->threshold = threshold;
+
+	return 0;
+}
+
+static u64
+gb_imbalance_ratio_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->gb.imbalance_ratio;
+}
+
+static int
+gb_imbalance_ratio_write(struct cgroup_subsys_state *css, struct cftype *cft,
+						 u64 ratio)
+{
+	struct schedtune *st = css_st(css);
+	struct group_balancer *gb = &st->gb;
+
+	ratio = min_t(u64, ratio, 100);
+
+	gb->imbalance_ratio = ratio;
+
+	return 0;
+}
+
+static u64
+gb_balance_ratio_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->gb.balance_ratio;
+}
+
+static int
+gb_balance_ratio_write(struct cgroup_subsys_state *css, struct cftype *cft,
+					   u64 ratio)
+{
+	struct schedtune *st = css_st(css);
+	struct group_balancer *gb = &st->gb;
+
+	ratio = min_t(u64, ratio, 100);
+
+	gb->balance_ratio = ratio;
+
+	return 0;
+}
+
+static u64
+gb_interval_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->gb.update_interval / NSEC_PER_USEC;
+}
+
+static int
+gb_interval_write(struct cgroup_subsys_state *css, struct cftype *cft,
+				  u64 interval_us)
+{
+	struct schedtune *st = css_st(css);
+	struct group_balancer *gb = &st->gb;
+
+	gb->update_interval = interval_us * NSEC_PER_USEC;
+	if (!interval_us) {
+		gb->util = 0;
+		gb->need_balance = false;
+	}
+
+	return 0;
+}
+
+static u64
+gb_duration_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->gb.imbalance_duration;
+}
+
+static int
+gb_duration_write(struct cgroup_subsys_state *css, struct cftype *cft,
+				  u64 duration)
+{
+	struct schedtune *st = css_st(css);
+	struct group_balancer *gb = &st->gb;
+
+	gb->imbalance_duration = duration;
+
+	return 0;
+}
+
+static u64
+gb_window_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->gb.window / NSEC_PER_MSEC;
+}
+
+static int
+gb_window_write(struct cgroup_subsys_state *css, struct cftype *cft,
+				u64 window)
+{
+	struct schedtune *st = css_st(css);
+	struct group_balancer *gb = &st->gb;
+
+	gb->window = window * NSEC_PER_MSEC;
+
+	return 0;
+}
+
 static u64
 util_est_en_read(struct cgroup_subsys_state *css, struct cftype *cft)
 {
