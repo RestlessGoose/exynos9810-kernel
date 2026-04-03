@@ -1180,7 +1180,7 @@ int __ref _cpus_down(const struct cpumask *cpus, enum cpuhp_state target)
 		st->state = CPUHP_AP_ONLINE_DYN_END;
 	}
 
-	cpuset_update_active_cpus(false);
+	cpuset_update_active_cpus();
 
 	/* if st->state > CPUHP_TEARDOWN_CPU, start to kick_ap_work */
 	for_each_cpu(cpu, &ap_work_cpus) {
