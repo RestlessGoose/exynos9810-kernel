@@ -673,7 +673,7 @@ static int max77705_vibrator_suspend(struct platform_device *pdev,
 	struct max77705_vibrator_drvdata *ddata
 		= platform_get_drvdata(pdev);
 
-	if (ddata && &ddata->sec_vib_ddata) {
+	if (ddata) {
 		kthread_flush_worker(&ddata->sec_vib_ddata.kworker);
 		hrtimer_cancel(&ddata->sec_vib_ddata.timer);
 	}
