@@ -774,8 +774,8 @@ static ssize_t store_max77705_rgb_blink(struct device *dev,
 
 	/*Set LED blink mode*/
 	if (led_enable_fade && delay_on_time > 0)
-		max77705_rgb_ramp(dev, led_fade_time_up, led_fade_time_down);
-		max77705_rgb_blink(dev, delay_on_time, delay_off_time);
+	max77705_rgb_ramp(dev, led_fade_time_up, led_fade_time_down);
+	max77705_rgb_blink(dev, delay_on_time, delay_off_time);
 
 	ret = max77705_update_reg(max77705_rgb->i2c, MAX77705_RGBLED_REG_LEDEN, led_en, 0xff);
 	if (ret < 0)
