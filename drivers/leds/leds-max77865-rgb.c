@@ -725,8 +725,8 @@ static ssize_t store_max77865_rgb_blink(struct device *dev,
 
 	/*Set LED blink mode*/
 	if (led_enable_fade && delay_on_time > 0)
-		max77865_rgb_ramp(dev, led_fade_time_up, led_fade_time_down);
-		max77865_rgb_blink(dev, delay_on_time, delay_off_time);
+	max77865_rgb_ramp(dev, led_fade_time_up, led_fade_time_down);
+	max77865_rgb_blink(dev, delay_on_time, delay_off_time);
 
 	pr_info("leds-max77865-rgb: %s, delay_on_time: %d, delay_off_time: %d, color: 0x%x, lowpower: %i\n",
 			__func__, delay_on_time, delay_off_time, led_brightness, led_lowpower_mode);
