@@ -45,7 +45,10 @@ struct cls_bpf_prog {
 	u32 gen_flags;
 	struct tcf_exts exts;
 	u32 handle;
-	u16 bpf_num_ops;
+	union {
+		u32 bpf_fd;
+		u16 bpf_num_ops;
+	};
 	struct sock_filter *bpf_ops;
 	const char *bpf_name;
 	struct tcf_proto *tp;
@@ -98,11 +101,11 @@ static int cls_bpf_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		} else if (at_ingress) {
 			/* It is safe to push/pull even if skb_shared() */
 			__skb_push(skb, skb->mac_len);
-			bpf_compute_data_pointers(skb);
+			bpf_compute_data_end(skb);
 			filter_res = BPF_PROG_RUN(prog->filter, skb);
 			__skb_pull(skb, skb->mac_len);
 		} else {
-			bpf_compute_data_pointers(skb);
+			bpf_compute_data_end(skb);
 			filter_res = BPF_PROG_RUN(prog->filter, skb);
 		}
 
@@ -372,6 +375,7 @@ static int cls_bpf_prog_from_efd(struct nlattr **tb, struct cls_bpf_prog *prog,
 	}
 
 	prog->bpf_ops = NULL;
+	prog->bpf_fd = bpf_fd;
 	prog->bpf_name = name;
 	prog->filter = fp;
 
@@ -555,17 +559,12 @@ static int cls_bpf_dump_bpf_info(const struct cls_bpf_prog *prog,
 static int cls_bpf_dump_ebpf_info(const struct cls_bpf_prog *prog,
 				  struct sk_buff *skb)
 {
-	struct nlattr *nla;
+	if (nla_put_u32(skb, TCA_BPF_FD, prog->bpf_fd))
+		return -EMSGSIZE;
 
 	if (prog->bpf_name &&
 	    nla_put_string(skb, TCA_BPF_NAME, prog->bpf_name))
 		return -EMSGSIZE;
-
-	nla = nla_reserve(skb, TCA_BPF_TAG, sizeof(prog->filter->tag));
-	if (nla == NULL)
-		return -EMSGSIZE;
-
-	memcpy(nla_data(nla), prog->filter->tag, nla_len(nla));
 
 	return 0;
 }

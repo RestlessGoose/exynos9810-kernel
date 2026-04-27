@@ -55,7 +55,6 @@ menu "Networking options"
 
 source "net/packet/Kconfig"
 source "net/unix/Kconfig"
-source "net/tls/Kconfig"
 source "net/xfrm/Kconfig"
 source "net/iucv/Kconfig"
 
@@ -89,7 +88,7 @@ source "net/ipv4/Kconfig"
 source "net/ipv6/Kconfig"
 source "net/netlabel/Kconfig"
 #ifdef CONFIG_MPTCP
-	source "net/mptcp/Kconfig"
+       source "net/mptcp/Kconfig"
 #endif
 
 endif # if INET
@@ -309,8 +308,7 @@ config BPF_JIT
 
 	  Note, admin should enable this feature changing:
 	  /proc/sys/net/core/bpf_jit_enable
-	  /proc/sys/net/core/bpf_jit_harden   (optional)
-	  /proc/sys/net/core/bpf_jit_kallsyms (optional)
+	  /proc/sys/net/core/bpf_jit_harden (optional)
 
 config NET_FLOW_LIMIT
 	bool
@@ -411,14 +409,6 @@ config LWTUNNEL
 	  tunnels like mpls. There is no netdevice associated with a light
 	  weight tunnel endpoint. Tunnel encapsulation parameters are stored
 	  with light weight tunnel state associated with fib routes.
-
-config LWTUNNEL_BPF
-	bool "Execute BPF program as route nexthop action"
-	depends on LWTUNNEL
-	default y if LWTUNNEL=y
-	---help---
-	  Allows to run BPF programs as a nexthop action following a route
-	  lookup for incoming and outgoing packets.
 
 config DST_CACHE
 	bool

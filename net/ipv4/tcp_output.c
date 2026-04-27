@@ -777,7 +777,9 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 			min_t(unsigned int, eff_sacks,
 			      (remaining - TCPOLEN_SACK_BASE_ALIGNED) /
 			      TCPOLEN_SACK_PERBLOCK);
-		
+#ifdef CONFIG_MPTCP
+		if (opts->num_sack_blocks)
+#endif
 		if (likely(opts->num_sack_blocks))
 			size += TCPOLEN_SACK_BASE_ALIGNED +
 				opts->num_sack_blocks * TCPOLEN_SACK_PERBLOCK;
@@ -3498,6 +3500,15 @@ static void tcp_connect_init(struct sock *sk)
 	    (tp->window_clamp > tcp_full_space(sk) || tp->window_clamp == 0))
 		tp->window_clamp = tcp_full_space(sk);
 
+#ifdef CONFIG_MPTCP
+	tp->ops->select_initial_window(tcp_full_space(sk),
+				       tp->advmss - (tp->rx_opt.ts_recent_stamp ? tp->tcp_header_len - sizeof(struct tcphdr) : 0),
+				       &tp->rcv_wnd,
+				       &tp->window_clamp,
+				       sysctl_tcp_window_scaling,
+				       &rcv_wscale,
+				       dst_metric(dst, RTAX_INITRWND), sk);
+#else
 	tcp_select_initial_window(sock_net(sk), tcp_full_space(sk),
 				  tp->advmss - (tp->rx_opt.ts_recent_stamp ? tp->tcp_header_len - sizeof(struct tcphdr) : 0),
 				  &tp->rcv_wnd,
@@ -3505,6 +3516,7 @@ static void tcp_connect_init(struct sock *sk)
 				  sysctl_tcp_window_scaling,
 				  &rcv_wscale,
 				  dst_metric(dst, RTAX_INITRWND));
+#endif
 
 	tp->rx_opt.rcv_wscale = rcv_wscale;
 	tp->rcv_ssthresh = tp->rcv_wnd;

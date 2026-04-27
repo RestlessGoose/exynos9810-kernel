@@ -23,7 +23,6 @@
 #include <linux/mm.h>
 #include <linux/ctype.h>
 #include <linux/slab.h>
-#include <linux/filter.h>
 #include <linux/compiler.h>
 #ifdef CONFIG_SEC_DUMP_SUMMARY
 #include <linux/sec_debug.h>
@@ -338,8 +337,8 @@ int kallsyms_lookup_size_offset(unsigned long addr, unsigned long *symbolsize,
 	char namebuf[KSYM_NAME_LEN];
 	if (is_ksym_addr(addr))
 		return !!get_symbol_pos(addr, symbolsize, offset);
-	return !!module_address_lookup(addr, symbolsize, offset, NULL, namebuf) ||
-	       !!__bpf_address_lookup(addr, symbolsize, offset, namebuf);
+
+	return !!module_address_lookup(addr, symbolsize, offset, NULL, namebuf);
 }
 
 #ifdef CONFIG_CFI_CLANG
@@ -372,8 +371,6 @@ const char *kallsyms_lookup(unsigned long addr,
 			    unsigned long *offset,
 			    char **modname, char *namebuf)
 {
-	const char *ret;
-
 	namebuf[KSYM_NAME_LEN - 1] = 0;
 	namebuf[0] = 0;
 
@@ -389,13 +386,10 @@ const char *kallsyms_lookup(unsigned long addr,
 		goto found;
 	}
 
-	/* See if it's in a module or a BPF JITed image. */
-	ret = module_address_lookup(addr, symbolsize, offset,
-				    modname, namebuf);
-	if (!ret)
-		ret = bpf_address_lookup(addr, symbolsize,
-					 offset, modname, namebuf);
-	return ret;
+	/* See if it's in a module. */
+	if (!module_address_lookup(addr, symbolsize, offset, modname,
+				     namebuf))
+		return NULL;
 
 found:
 	cleanup_symbol_name(namebuf);
@@ -551,37 +545,21 @@ EXPORT_SYMBOL(__print_symbol);
 /* To avoid using get_symbol_offset for every symbol, we carry prefix along. */
 struct kallsym_iter {
 	loff_t pos;
-	loff_t pos_mod_end;
 	unsigned long value;
 	unsigned int nameoff; /* If iterating in core kernel symbols. */
 	char type;
 	char name[KSYM_NAME_LEN];
 	char module_name[MODULE_NAME_LEN];
 	int exported;
-	int show_value;
 };
 
 static int get_ksymbol_mod(struct kallsym_iter *iter)
 {
-	int ret = module_get_kallsym(iter->pos - kallsyms_num_syms,
-				     &iter->value, &iter->type,
-				     iter->name, iter->module_name,
-				     &iter->exported);
-	if (ret < 0) {
-		iter->pos_mod_end = iter->pos;
+	if (module_get_kallsym(iter->pos - kallsyms_num_syms, &iter->value,
+				&iter->type, iter->name, iter->module_name,
+				&iter->exported) < 0)
 		return 0;
-	}
-
 	return 1;
-}
-
-static int get_ksymbol_bpf(struct kallsym_iter *iter)
-{
-	iter->module_name[0] = '\0';
-	iter->exported = 0;
-	return bpf_get_kallsym(iter->pos - iter->pos_mod_end,
-			       &iter->value, &iter->type,
-			       iter->name) < 0 ? 0 : 1;
 }
 
 /* Returns space to next name. */
@@ -604,30 +582,16 @@ static void reset_iter(struct kallsym_iter *iter, loff_t new_pos)
 	iter->name[0] = '\0';
 	iter->nameoff = get_symbol_offset(new_pos);
 	iter->pos = new_pos;
-	if (new_pos == 0)
-		iter->pos_mod_end = 0;
-}
-
-static int update_iter_mod(struct kallsym_iter *iter, loff_t pos)
-{
-	iter->pos = pos;
-
-	if (iter->pos_mod_end > 0 &&
-	    iter->pos_mod_end < iter->pos)
-		return get_ksymbol_bpf(iter);
-
-	if (!get_ksymbol_mod(iter))
-		return get_ksymbol_bpf(iter);
-
-	return 1;
 }
 
 /* Returns false if pos at or past end of file. */
 static int update_iter(struct kallsym_iter *iter, loff_t pos)
 {
 	/* Module symbols can be accessed randomly. */
-	if (pos >= kallsyms_num_syms)
-		return update_iter_mod(iter, pos);
+	if (pos >= kallsyms_num_syms) {
+		iter->pos = pos;
+		return get_ksymbol_mod(iter);
+	}
 
 	/* If we're not on the desired position, reset to new position. */
 	if (pos != iter->pos)
@@ -661,14 +625,11 @@ static void s_stop(struct seq_file *m, void *p)
 
 static int s_show(struct seq_file *m, void *p)
 {
-	unsigned long value;
 	struct kallsym_iter *iter = m->private;
 
 	/* Some debugging symbols have no name.  Ignore them. */
 	if (!iter->name[0])
 		return 0;
-
-	value = iter->show_value ? iter->value : 0;
 
 	if (iter->module_name[0]) {
 		char type;
@@ -679,10 +640,10 @@ static int s_show(struct seq_file *m, void *p)
 		 */
 		type = iter->exported ? toupper(iter->type) :
 					tolower(iter->type);
-		seq_printf(m, KALLSYM_FMT " %c %s\t[%s]\n", value,
+		seq_printf(m, "%pK %c %s\t[%s]\n", (void *)iter->value,
 			   type, iter->name, iter->module_name);
 	} else
-		seq_printf(m, KALLSYM_FMT " %c %s\n", value,
+		seq_printf(m, "%pK %c %s\n", (void *)iter->value,
 			   iter->type, iter->name);
 	return 0;
 }
@@ -693,40 +654,6 @@ static const struct seq_operations kallsyms_op = {
 	.stop = s_stop,
 	.show = s_show
 };
-
-static inline int kallsyms_for_perf(void)
-{
-#ifdef CONFIG_PERF_EVENTS
-	extern int sysctl_perf_event_paranoid;
-	if (sysctl_perf_event_paranoid <= 1)
-		return 1;
-#endif
-	return 0;
-}
-
-/*
- * We show kallsyms information even to normal users if we've enabled
- * kernel profiling and are explicitly not paranoid (so kptr_restrict
- * is clear, and sysctl_perf_event_paranoid isn't set).
- *
- * Otherwise, require CAP_SYSLOG (assuming kptr_restrict isn't set to
- * block even that).
- */
-int kallsyms_show_value(void)
-{
-	switch (kptr_restrict) {
-	case 0:
-		if (kallsyms_for_perf())
-			return 1;
-	/* fallthrough */
-	case 1:
-		if (has_capability_noaudit(current, CAP_SYSLOG))
-			return 1;
-	/* fallthrough */
-	default:
-		return 0;
-	}
-}
 
 static int kallsyms_open(struct inode *inode, struct file *file)
 {
@@ -741,7 +668,6 @@ static int kallsyms_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 	reset_iter(iter, 0);
 
-	iter->show_value = kallsyms_show_value();
 	return 0;
 }
 

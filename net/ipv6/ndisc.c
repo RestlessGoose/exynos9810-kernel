@@ -196,8 +196,6 @@ static inline int ndisc_is_useropt(const struct net_device *dev,
 {
 	return opt->nd_opt_type == ND_OPT_RDNSS ||
 		opt->nd_opt_type == ND_OPT_DNSSL ||
-		opt->nd_opt_type == ND_OPT_CAPTIVE_PORTAL ||
-		opt->nd_opt_type == ND_OPT_PREF64 ||
 		ndisc_ops_is_useropt(dev, opt->nd_opt_type);
 }
 
@@ -886,15 +884,6 @@ have_ifp:
 			     NEIGH_UPDATE_F_WEAK_OVERRIDE|
 			     NEIGH_UPDATE_F_OVERRIDE,
 			     NDISC_NEIGHBOUR_SOLICITATION, &ndopts);
-
-	if (neigh != NULL && neigh->dev != NULL && !strcmp(neigh->dev->name, "aware_data0")) {
-		pr_info("ipv6 neigh_lookup is done by receiving NS"
-			" from [:%02x%02x] to [:%02x%02x] and sending NA for %s\n",
-			saddr->s6_addr[14], saddr->s6_addr[15], 
-			daddr->s6_addr[14], daddr->s6_addr[15], 
-			neigh->dev->name);
-	}
-
 	if (neigh || !dev->header_ops) {
 		ndisc_send_na(dev, saddr, &msg->target, !!is_router,
 			      true, (ifp != NULL && inc), inc);
@@ -1010,14 +999,6 @@ static void ndisc_recv_na(struct sk_buff *skb)
 			     NEIGH_UPDATE_F_OVERRIDE_ISROUTER|
 			     (msg->icmph.icmp6_router ? NEIGH_UPDATE_F_ISROUTER : 0),
 			     NDISC_NEIGHBOUR_ADVERTISEMENT, &ndopts);
-
-		if (neigh->dev != NULL && !strcmp(neigh->dev->name, "aware_data0")) {
-			pr_info("ipv6 neigh_lookup is done by receiving NA"
-				" from [:%02x%02x] to [:%02x%02x] for %s\n",
-				saddr->s6_addr[14], saddr->s6_addr[15], 
-				daddr->s6_addr[14], daddr->s6_addr[15], 
-				dev->name);
-		}
 
 		if ((old_flags & ~neigh->flags) & NTF_ROUTER) {
 			/*

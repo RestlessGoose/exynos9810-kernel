@@ -571,11 +571,23 @@ static void tcp_grow_window(struct sock *sk, const struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	int room;
+#ifdef CONFIG_MPTCP
+	struct sock *meta_sk = mptcp(tp) ? mptcp_meta_sk(sk) : sk;
+	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
+	if (is_meta_sk(sk))
+		return;
+#endif
 
 	room = min_t(int, tp->window_clamp, tcp_space(sk)) - tp->rcv_ssthresh;
 
 	/* Check #1 */
+#ifdef CONFIG_MPTCP
+	if (meta_tp->rcv_ssthresh < meta_tp->window_clamp &&
+	    (int)meta_tp->rcv_ssthresh < tcp_space(meta_sk) &&
+	    !tcp_under_memory_pressure(sk)) {
+#else
 	if (room > 0 && !tcp_under_memory_pressure(sk)) {
+#endif
 		int incr;
 
 		/* Check #2. Increase window, if skb with such overhead
@@ -593,7 +605,12 @@ static void tcp_grow_window(struct sock *sk, const struct sk_buff *skb)
 #endif
 		if (incr) {
 			incr = max_t(int, incr, 2 * skb->len);
+#ifdef CONFIG_MPTCP
+			meta_tp->rcv_ssthresh = min(meta_tp->rcv_ssthresh + incr,
+						    meta_tp->window_clamp);
+#else
 			tp->rcv_ssthresh += min(room, incr);
+#endif
 			inet_csk(sk)->icsk_ack.quick |= 1;
 		}
 	}
@@ -7314,6 +7331,9 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 		af_ops->send_synack(fastopen_sk, dst, &fl, req,
 				    &foc, TCP_SYNACK_FASTOPEN);
 		/* Add the child socket directly into the accept queue */
+#ifdef CONFIG_MPTCP
+		inet_csk_reqsk_queue_add(sk, req, meta_sk);
+#else
 		if (!inet_csk_reqsk_queue_add(sk, req, fastopen_sk)) {
 			reqsk_fastopen_remove(fastopen_sk, req, false);
 			bh_unlock_sock(fastopen_sk);
@@ -7321,10 +7341,6 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 			reqsk_put(req);
 			goto drop;
 		}
-#ifdef CONFIG_MPTCP
-		inet_csk_reqsk_queue_add(sk, req, meta_sk);
-#else
-		inet_csk_reqsk_queue_add(sk, req, fastopen_sk);
 #endif
 		sk->sk_data_ready(sk);
 		bh_unlock_sock(fastopen_sk);

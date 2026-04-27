@@ -668,20 +668,6 @@ int kernel_sendmsg(struct socket *sock, struct msghdr *msg,
 }
 EXPORT_SYMBOL(kernel_sendmsg);
 
-int kernel_sendmsg_locked(struct sock *sk, struct msghdr *msg,
-			  struct kvec *vec, size_t num, size_t size)
-{
-	struct socket *sock = sk->sk_socket;
-
-	if (!sock->ops->sendmsg_locked)
-		sock_no_sendmsg_locked(sk, msg, size);
-
-	iov_iter_kvec(&msg->msg_iter, WRITE | ITER_KVEC, vec, num, size);
-
-	return sock->ops->sendmsg_locked(sk, msg, msg_data_left(msg));
-}
-EXPORT_SYMBOL(kernel_sendmsg_locked);
-
 /*
  * called from sock_recv_timestamp() if sock_flag(sk, SOCK_RCVTSTAMP)
  */
@@ -1776,8 +1762,8 @@ SYSCALL_DEFINE4(recv, int, fd, void __user *, ubuf, size_t, size,
  *	to pass the user mode parameter for the protocols to sort out.
  */
 
-static int __sys_setsockopt(int fd, int level, int optname,
-			    char __user *optval, int optlen)
+SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+		char __user *, optval, int, optlen)
 {
 	int err, fput_needed;
 	struct socket *sock;
@@ -1805,19 +1791,13 @@ out_put:
 	return err;
 }
 
-SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
-		char __user *, optval, int, optlen)
-{
-	return __sys_setsockopt(fd, level, optname, optval, optlen);
-}
-
 /*
  *	Get a socket option. Because we don't know the option lengths we have
  *	to pass a user mode parameter for the protocols to sort out.
  */
 
-static int __sys_getsockopt(int fd, int level, int optname,
-			    char __user *optval, int __user *optlen)
+SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+		char __user *, optval, int __user *, optlen)
 {
 	int err, fput_needed;
 	struct socket *sock;
@@ -1840,12 +1820,6 @@ out_put:
 		fput_light(sock->file, fput_needed);
 	}
 	return err;
-}
-
-SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
-		char __user *, optval, int __user *, optlen)
-{
-	return __sys_getsockopt(fd, level, optname, optval, optlen);
 }
 
 /*
@@ -2458,13 +2432,12 @@ SYSCALL_DEFINE2(socketcall, int, call, unsigned long __user *, args)
 		err = sys_shutdown(a0, a1);
 		break;
 	case SYS_SETSOCKOPT:
-		err = __sys_setsockopt(a0, a1, a[2], (char __user *)a[3],
-				       a[4]);
+		err = sys_setsockopt(a0, a1, a[2], (char __user *)a[3], a[4]);
 		break;
 	case SYS_GETSOCKOPT:
 		err =
-		    __sys_getsockopt(a0, a1, a[2], (char __user *)a[3],
-				     (int __user *)a[4]);
+		    sys_getsockopt(a0, a1, a[2], (char __user *)a[3],
+				   (int __user *)a[4]);
 		break;
 	case SYS_SENDMSG:
 		err = sys_sendmsg(a0, (struct user_msghdr __user *)a1, a[2]);
@@ -3356,19 +3329,6 @@ int kernel_sendpage(struct socket *sock, struct page *page, int offset,
 	return sock_no_sendpage(sock, page, offset, size, flags);
 }
 EXPORT_SYMBOL(kernel_sendpage);
-
-int kernel_sendpage_locked(struct sock *sk, struct page *page, int offset,
-			   size_t size, int flags)
-{
-	struct socket *sock = sk->sk_socket;
-
-	if (sock->ops->sendpage_locked)
-		return sock->ops->sendpage_locked(sk, page, offset, size,
-						  flags);
-
-	return sock_no_sendpage_locked(sk, page, offset, size, flags);
-}
-EXPORT_SYMBOL(kernel_sendpage_locked);
 
 int kernel_sock_ioctl(struct socket *sock, int cmd, unsigned long arg)
 {
