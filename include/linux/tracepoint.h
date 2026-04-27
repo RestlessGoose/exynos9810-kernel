@@ -25,12 +25,6 @@ struct module;
 struct tracepoint;
 struct notifier_block;
 
-struct bpf_raw_event_map {
-	struct tracepoint	*tp;
-	void			*bpf_func;
-	u32			num_args;
-} __aligned(32);
-
 struct trace_enum_map {
 	const char		*system;
 	const char		*enum_string;

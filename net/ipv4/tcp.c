@@ -943,8 +943,8 @@ static int tcp_send_mss(struct sock *sk, int *size_goal, int flags)
 	return mss_now;
 }
 
-ssize_t do_tcp_sendpages(struct sock *sk, struct page *page, int offset,
-			 size_t size, int flags)
+static ssize_t do_tcp_sendpages(struct sock *sk, struct page *page, int offset,
+				size_t size, int flags)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	int mss_now, size_goal;
@@ -1036,9 +1036,7 @@ new_segment:
 			get_page(page);
 			skb_fill_page_desc(skb, i, page, offset, copy);
 		}
-
-		if (!(flags & MSG_NO_SHARED_FRAGS))
-			skb_shinfo(skb)->tx_flags |= SKBTX_SHARED_FRAG;
+		skb_shinfo(skb)->tx_flags |= SKBTX_SHARED_FRAG;
 
 		skb->len += copy;
 		skb->data_len += copy;
@@ -1099,11 +1097,12 @@ out_err:
 		sk->sk_write_space(sk);
 	return sk_stream_error(sk, flags, err);
 }
-EXPORT_SYMBOL_GPL(do_tcp_sendpages);
 
-int tcp_sendpage_locked(struct sock *sk, struct page *page, int offset,
-			size_t size, int flags)
+int tcp_sendpage(struct sock *sk, struct page *page, int offset,
+		 size_t size, int flags)
 {
+	ssize_t res;
+
 	/* If MPTCP is enabled, we check it later after establishment */
 #ifdef CONFIG_MPTCP
 	if (!mptcp(tcp_sk(sk)) && (!(sk->sk_route_caps & NETIF_F_SG) ||
@@ -1115,20 +1114,13 @@ int tcp_sendpage_locked(struct sock *sk, struct page *page, int offset,
 		return sock_no_sendpage(sk->sk_socket, page, offset, size,
 					flags);
 
-	return do_tcp_sendpages(sk, page, offset, size, flags);
-}
-
-int tcp_sendpage(struct sock *sk, struct page *page, int offset,
-		 size_t size, int flags)
-{
-	int ret;
-
 	lock_sock(sk);
-	tcp_rate_check_app_limited(sk);  /* is sending application-limited? */
-	ret = tcp_sendpage_locked(sk, page, offset, size, flags);
-	release_sock(sk);
 
-	return ret;
+	tcp_rate_check_app_limited(sk);  /* is sending application-limited? */
+
+	res = do_tcp_sendpages(sk, page, offset, size, flags);
+	release_sock(sk);
+	return res;
 }
 EXPORT_SYMBOL(tcp_sendpage);
 
@@ -1228,7 +1220,7 @@ static int tcp_sendmsg_fastopen(struct sock *sk, struct msghdr *msg,
 	return err;
 }
 
-int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
+int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb;
@@ -1238,6 +1230,8 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 	bool process_backlog = false;
 	bool sg;
 	long timeo;
+
+	lock_sock(sk);
 
 	flags = msg->msg_flags;
 	if (unlikely(flags & MSG_FASTOPEN || inet_sk(sk)->defer_connect) &&
@@ -1488,6 +1482,7 @@ out:
 		tcp_push(sk, flags, mss_now, tp->nonagle, size_goal);
 	}
 out_nopush:
+	release_sock(sk);
 	return copied + copied_syn;
 
 do_fault:
@@ -1508,18 +1503,8 @@ out_err:
 	/* make sure we wake any epoll edge trigger waiter */
 	if (unlikely(skb_queue_len(&sk->sk_write_queue) == 0 && err == -EAGAIN))
 		sk->sk_write_space(sk);
-	return err;
-}
-
-int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
-{
-	int ret;
-
-	lock_sock(sk);
-	ret = tcp_sendmsg_locked(sk, msg, size);
 	release_sock(sk);
-
-	return ret;
+	return err;
 }
 EXPORT_SYMBOL(tcp_sendmsg);
 
@@ -2763,21 +2748,6 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		return err;
 	}
 #endif
-	case TCP_ULP: {
-		char name[TCP_ULP_NAME_MAX];
-		if (optlen < 1)
-			return -EINVAL;
-		val = strncpy_from_user(name, optval,
-					min_t(long, TCP_ULP_NAME_MAX - 1,
-						optlen));
-		if (val < 0)
-			return -EFAULT;
-		name[val] = 0;
-		lock_sock(sk);
-		err = tcp_set_ulp(sk, name);
-		release_sock(sk);
-		return err;
-	}
 	default:
 		/* fallthru */
 		break;
@@ -3317,16 +3287,6 @@ static int do_tcp_getsockopt(struct sock *sk, int level,
 		if (put_user(len, optlen))
 			return -EFAULT;
 		if (copy_to_user(optval, icsk->icsk_ca_ops->name, len))
-			return -EFAULT;
-		return 0;
-
-	case TCP_ULP:
-		if (get_user(len, optlen))
-			return -EFAULT;
-		len = min_t(unsigned int, len, TCP_ULP_NAME_MAX);
-		if (put_user(len, optlen))
-			return -EFAULT;
-		if (copy_to_user(optval, icsk->icsk_ulp_ops->name, len))
 			return -EFAULT;
 		return 0;
 

@@ -4725,9 +4725,6 @@ static long _perf_ioctl(struct perf_event *event, unsigned int cmd, unsigned lon
 	case PERF_EVENT_IOC_SET_BPF:
 		return perf_event_set_bpf_prog(event, arg);
 
-	case PERF_EVENT_IOC_QUERY_BPF:
-		return perf_event_query_prog_array(event, (void __user *)arg);
-
 	case PERF_EVENT_IOC_PAUSE_OUTPUT: {
 		struct ring_buffer *rb;
 
@@ -7882,7 +7879,7 @@ static void bpf_overflow_handler(struct perf_event *event,
 	if (unlikely(__this_cpu_inc_return(bpf_prog_active) != 1))
 		goto out;
 	rcu_read_lock();
-	ret = BPF_PROG_RUN(event->prog, &ctx);
+	ret = BPF_PROG_RUN(event->prog, (void *)&ctx);
 	rcu_read_unlock();
 out:
 	__this_cpu_dec(bpf_prog_active);

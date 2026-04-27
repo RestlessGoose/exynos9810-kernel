@@ -127,7 +127,6 @@ enum {
 #define TCP_SAVED_SYN		28	/* Get SYN headers recorded for connection */
 #define TCP_REPAIR_WINDOW	29	/* Get/set window parameters */
 #define TCP_FASTOPEN_CONNECT	30	/* Attempt FastOpen with connect */
-#define TCP_ULP		31	/* Attach a ULP to a TCP connection */
 #ifdef CONFIG_MPTCP
 #define MPTCP_ENABLED		42
 #define MPTCP_SCHEDULER		43

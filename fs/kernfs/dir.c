@@ -523,7 +523,7 @@ void kernfs_put(struct kernfs_node *kn)
 		simple_xattrs_free(&kn->iattr->xattrs);
 	}
 	kfree(kn->iattr);
-	ida_simple_remove(&root->ino_ida, kn->id.ino);
+	ida_simple_remove(&root->ino_ida, kn->ino);
 	kmem_cache_free(kernfs_node_cache, kn);
 
 	kn = parent;
@@ -623,7 +623,7 @@ static struct kernfs_node *__kernfs_new_node(struct kernfs_root *root,
 	ret = ida_simple_get(&root->ino_ida, 1, 0, GFP_KERNEL);
 	if (ret < 0)
 		goto err_out2;
-	kn->id.ino = ret;
+	kn->ino = ret;
 
 	atomic_set(&kn->count, 1);
 	atomic_set(&kn->active, KN_DEACTIVATED_BIAS);
@@ -1582,7 +1582,7 @@ static int kernfs_fop_readdir(struct file *file, struct dir_context *ctx)
 		const char *name = pos->name;
 		unsigned int type = dt_type(pos);
 		int len = strlen(name);
-		ino_t ino = pos->id.ino;
+		ino_t ino = pos->ino;
 
 		ctx->pos = pos->hash;
 		file->private_data = pos;
