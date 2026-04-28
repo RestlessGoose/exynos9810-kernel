@@ -46,7 +46,7 @@ static struct shrinker mm_debug_shrinker = {
 
 void init_lowfile_detect(void)
 {
-	if (totalram_pages > GB_TO_PAGES(MIN_FILE_SIZE_THR_GB))
+	if (totalram_pages() > GB_TO_PAGES(MIN_FILE_SIZE_THR_GB))
 		min_file = MB_TO_PAGES(MIN_FILE_SIZE_HIGH);
 	else
 		min_file = MB_TO_PAGES(MIN_FILE_SIZE_LOW);
