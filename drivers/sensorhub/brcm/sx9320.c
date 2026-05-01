@@ -140,7 +140,6 @@ static int sx9320_check_hallic_state(char *file_path, char hall_ic_status[])
 	filep = filp_open(file_path, O_RDONLY, 0440);
 	if (IS_ERR(filep)) {
 		iRet = PTR_ERR(filep);
-		pr_err("[SX9320]: %s - file open fail %d\n", __func__, iRet);
 		set_fs(old_fs);
 		return iRet;
 	}
@@ -148,14 +147,10 @@ static int sx9320_check_hallic_state(char *file_path, char hall_ic_status[])
 	iRet = filep->f_op->read(filep, hall_sysfs,
 		sizeof(hall_sysfs), &filep->f_pos);
 
-	if (iRet <= 0) {
-		pr_err("[SX9320]: %s - file read fail %d\n", __func__, iRet);
-		filp_close(filep, current->files);
-		set_fs(old_fs);
-		return -EIO;
-	} else {
+	if (iRet != sizeof(hall_sysfs))
+		iRet = -EIO;
+	else
 		strncpy(hall_ic_status, hall_sysfs, sizeof(hall_sysfs));
-	}
 
 	filp_close(filep, current->files);
 	set_fs(old_fs);
