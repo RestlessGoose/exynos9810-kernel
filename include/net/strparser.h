@@ -136,7 +136,7 @@ void strp_done(struct strparser *strp);
 void strp_stop(struct strparser *strp);
 void strp_check_rcv(struct strparser *strp);
 int strp_init(struct strparser *strp, struct sock *csk,
-	      struct strp_callbacks *cb);
+	      const struct strp_callbacks *cb);
 void strp_data_ready(struct strparser *strp);
 
 #endif /* __NET_STRPARSER_H_ */

@@ -442,8 +442,6 @@ config NET_SOCK_MSG
 	  ULPs (upper layer modules, e.g. TLS) to process L7 application data
 	  with the help of BPF programs.
 
-source "net/ipc_router/Kconfig"
-
 config DST_CACHE
 	bool
 	default n
