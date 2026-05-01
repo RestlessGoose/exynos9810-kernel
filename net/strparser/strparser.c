@@ -426,7 +426,7 @@ static void strp_rx_msg_timeout(unsigned long arg)
 }
 
 int strp_init(struct strparser *strp, struct sock *csk,
-	      struct strp_callbacks *cb)
+	      const struct strp_callbacks *cb)
 {
 	struct socket *sock = csk->sk_socket;
 
