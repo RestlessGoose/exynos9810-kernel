@@ -349,7 +349,7 @@ BUILD_GENERATE_CONFIG()
     # SUSFS-NEXT on Fork
     if [[ "$CR_SUS" =~ ^[yY]$ ]]; then
       REPO_URL="https://github.com/sidex15/KernelSU-Next"
-      BRANCH="next-susfs_v1.5.5-v1.5.7"
+      BRANCH="next-susfs"
       echo " Using sidex15 SuSFS repository and branch"
     else
       REPO_URL="https://github.com/KernelSU-Next/KernelSU-Next"
