@@ -654,7 +654,7 @@ static void kbase_populate_user_data(struct kbase_device *kbdev, struct gpu_prop
 		data->raw_props.texture_features[i] = regdump->texture_features[i];
 	}
 
-	data->core_props.gpu_available_memory_size = kbase_totalram_pages() << PAGE_SHIFT;
+	data->core_props.gpu_available_memory_size = totalram_pages() << PAGE_SHIFT;
 
 	/*
 	 * The CORE_FEATURES register has different meanings depending on GPU.
