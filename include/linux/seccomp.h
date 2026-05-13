@@ -9,7 +9,6 @@
 #ifdef CONFIG_SECCOMP
 
 #include <linux/thread_info.h>
-#include <linux/atomic.h>
 #include <asm/seccomp.h>
 
 struct seccomp_filter;
@@ -26,7 +25,6 @@ struct seccomp_filter;
  */
 struct seccomp {
 	int mode;
-	atomic_t filter_count;
 	struct seccomp_filter *filter;
 };
 
