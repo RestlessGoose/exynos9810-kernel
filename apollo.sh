@@ -446,13 +446,13 @@ BUILD()
 {
 
 	if [ "$CR_SPOOF4BPF" = "1" ]; then
-		echo " Spoofing kernel version to 4.19.236 for BPF"
-		sed -i 's/strcpy(tmp.release, \"4.9.337\");/strcpy(tmp.release, \"4.19.236\");/g' kernel/sys.c
+		echo " Spoofing kernel version to 5.4.186 for BPF"
+		sed -i 's/strcpy(tmp.release, \"4.9.337\");/strcpy(tmp.release, \"5.4.186\");/g' kernel/sys.c
 	fi
 
 	if [ "$CR_SPOOF4BPF" = "2" ]; then
 		echo " Reversing kernel version spoof to 4.9.337 for BPF"
-		sed -i 's/strcpy(tmp.release, \"4.19.236\");/strcpy(tmp.release, \"4.9.337\");/g' kernel/sys.c
+		sed -i 's/strcpy(tmp.release, \"5.4.186\");/strcpy(tmp.release, \"4.9.337\");/g' kernel/sys.c
 	fi
 
 	if [ "$CR_TARGET" = "1" ]; then
@@ -669,7 +669,7 @@ echo "1) SELinux Permissive "  "2) SELinux Enforcing"
 echo " "
 read -p "Please select your SElinux mode (1-2) > " CR_SELINUX
 echo " "
-echo "1) 4.19.236 BPF spoof "  "2) No kernel ver spoof"
+echo "1) 5.4.186 BPF spoof "  "2) No kernel ver spoof"
 echo " "
 read -p "Please select spoof for BPF (1-2) > " CR_SPOOF4BPF
 echo " "
