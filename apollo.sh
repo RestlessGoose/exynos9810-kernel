@@ -40,7 +40,7 @@ CR_DTB=$CR_DIR/arch/$CR_ARCH/boot/dtb.img
 # defconfig dir
 CR_DEFCONFIG=$CR_DIR/arch/$CR_ARCH/configs
 # Kernel Name and Version
-CR_VERSION=v1.5
+CR_VERSION=v1.6
 CR_NAME=CrownTrail
 # Thread count
 CR_JOBS=$(nproc --all)
