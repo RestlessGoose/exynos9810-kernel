@@ -29,6 +29,10 @@ config ICE
 	bool "Enable IceCold Engine automatic undervolt"
 	default n
 
+config FORCER
+	bool "Enable Forcer for forced DISP frequency based on display state"
+	default n
+
 config EXYNOS_PD
 	bool "Exynos PM domain Support"
 	depends on ARCH_EXYNOS

@@ -1,5 +1,6 @@
 #include <linux/module.h>
 #include <linux/exynos-ss.h>
+#include <linux/forcer.h>
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/cal-if.h>
 #include <soc/samsung/acpm_mfd.h>
@@ -50,7 +51,11 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 {
 	struct vclk *vclk;
 	int ret;
-
+#ifdef CONFIG_FORCER
+	unsigned long temp = cal_dfs_check_forcer(id);
+	if (temp)
+		rate = temp;
+#endif
 	if (IS_ACPM_VCLK(id)) {
 		ret = exynos_acpm_set_rate(GET_IDX(id), rate);
 		if (!ret) {
@@ -96,6 +101,12 @@ unsigned long cal_dfs_get_rate(unsigned int id)
 {
 	int ret;
 
+#ifdef CONFIG_FORCER
+	ret = cal_dfs_check_forcer(id);
+	if (ret != 0)
+		return ret;
+#endif
+
 	ret = vclk_recalc_rate(id);
 
 	return ret;
@@ -113,7 +124,12 @@ int cal_dfs_get_rate_table(unsigned int id, unsigned long *table)
 int cal_clk_setrate(unsigned int id, unsigned long rate)
 {
 	int ret = -EINVAL;
+#ifdef CONFIG_FORCER
+	unsigned long temp = cal_dfs_check_forcer(id);
 
+	if (temp != 0)
+		rate = temp;
+#endif
 	ret = vclk_set_rate(id, rate);
 
 	return ret;
@@ -122,6 +138,12 @@ int cal_clk_setrate(unsigned int id, unsigned long rate)
 unsigned long cal_clk_getrate(unsigned int id)
 {
 	int ret = 0;
+
+#ifdef CONFIG_FORCER
+	ret = cal_dfs_check_forcer(id);
+	if (ret != 0)
+		return ret;
+#endif
 
 	ret = vclk_recalc_rate(id);
 
