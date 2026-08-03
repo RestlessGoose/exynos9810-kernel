@@ -19,8 +19,4 @@ extern unsigned long cal_dfs_check_forcer(unsigned int id);
 extern void forcer_handle_display_on(void);
 extern void forcer_handle_display_off(void);
 extern void forcer_handle_display_alpm(void);
-extern bool forcer_mode;
-#else
-static unsigned long cal_dfs_check_forcer(unsigned int id) {return 0;};
-extern bool forcer_mode = false;
 #endif

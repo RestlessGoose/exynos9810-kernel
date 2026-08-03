@@ -8,7 +8,6 @@ unsigned int custom_disp_freq, custom_disp_voltage = 0;
 unsigned int back_disp_freq, back_disp_voltage = 0;
 static unsigned int disp_freqlist[5] = {640000, 534000, 400000, 200000, 134000};
 unsigned int disp_voltlist[5] = {0, 0, 0, 0, 0};
-bool forcer_mode = false;
 
 void forcer_handle_display_on(void) {
     custom_disp_freq = 640000;
