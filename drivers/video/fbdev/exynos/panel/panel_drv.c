@@ -434,7 +434,7 @@ static int __panel_seq_set_alpm(struct panel_device *panel)
 	struct regulator *elvss = regulator_get(NULL, "elvss");
 #endif
 	panel_info("PANEL:INFO:%s:was called\n", __func__);
-
+	
 #ifdef CONFIG_DISP_PMIC_SSD
 	if (!IS_ERR_OR_NULL(elvss)) {
 		ret = regulator_set_short_detection(elvss, true, SSD_CURRENT_DOZE);
@@ -580,10 +580,6 @@ int panel_display_on(struct panel_device *panel)
 		goto do_exit;
 	}
 
-	#ifdef CONFIG_FORCER
-	forcer_handle_display_on();
-	#endif
-
 	mdnie_enable(&panel->mdnie);
 
 	ret = __panel_seq_display_on(panel);
@@ -622,10 +618,6 @@ static int panel_display_off(struct panel_device *panel)
 			__func__);
 	}
 	state->disp_on = PANEL_DISPLAY_OFF;
-
-	#ifdef CONFIG_FORCER
-	forcer_handle_display_off();
-	#endif
 
 	return 0;
 do_exit:
@@ -1393,9 +1385,6 @@ static int panel_update_doze(struct panel_device *panel)
 
 	if (updated) {
 		ret = __panel_seq_set_alpm(panel);
-		#ifdef CONFIG_FORCER
-		forcer_handle_display_alpm();
-		#endif
 		if (ret) {
 			panel_err("PANEL:ERR:%s, failed to write alpm\n",
 				__func__);
@@ -1869,6 +1858,7 @@ static long panel_core_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg
 
 			ret = panel_display_on(panel);
 		}
+
 		copr_update_start(&panel->copr, 3);
 		break;
 	case PANEL_IOC_EVT_VSYNC:
@@ -1890,6 +1880,16 @@ static long panel_core_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg
 			__func__,  _IOC_NR(cmd));
 	}
 	mutex_unlock(&panel->io_lock);
+
+#ifdef CONFIG_FORCER
+	if (panel->state.cur_state == PANEL_STATE_ALPM) {
+		forcer_handle_display_alpm();
+	} else if (panel->state.cur_state != PANEL_STATE_ALPM && panel->state.cur_state != PANEL_STATE_OFF) {
+		forcer_handle_display_on();
+	} else if (panel->state.cur_state == PANEL_STATE_OFF) {
+		forcer_handle_display_off();
+	}
+#endif
 
 	return (long)ret;
 }
