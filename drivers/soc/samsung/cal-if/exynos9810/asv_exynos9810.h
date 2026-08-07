@@ -221,6 +221,7 @@ int asv_table_init(void)
 	ice_asv_scores_g3d = asv_tbl.g3d_asv_group;
 	ice_asv_scores_mif = asv_tbl.mif_asv_group;
 	ice_asv_scores_cp = asv_tbl.cp_asv_group;
+	ice_asv_scores_disp = asv_tbl.cam_disp_asv_group;
 	#endif
 
 	return asv_tbl.asv_table_version;
