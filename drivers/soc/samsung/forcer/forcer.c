@@ -19,7 +19,7 @@ void forcer_handle_display_on(void) {
 }
 
 void forcer_handle_display_off(void) {
-    custom_disp_freq = 134000;
+    custom_disp_freq = 50000;
     custom_disp_voltage = disp_voltlist[4];
 
     fvmap_patch(DVFS_DISP_EVT1, back_disp_freq, custom_disp_voltage);
@@ -28,7 +28,7 @@ void forcer_handle_display_off(void) {
 }
 
 void forcer_handle_display_alpm(void) {
-    custom_disp_freq = 200000;
+    custom_disp_freq = 134000;
     custom_disp_voltage = disp_voltlist[3];
 
     fvmap_patch(DVFS_DISP_EVT1, back_disp_freq, custom_disp_voltage);
