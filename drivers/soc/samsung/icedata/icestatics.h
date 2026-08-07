@@ -86,5 +86,15 @@ static unsigned int ice_cp_freqs[4] = {      // Modem frequency list
     533000
 };
 
+static unsigned int ice_disp_nfreqs = 5;
+
+static unsigned int ice_disp_freqs[5] = {    // DISP frequency list
+    640000,
+    534000,
+    400000,
+    200000,
+    134000
+};
+
 static unsigned int ice_uv_step = 6250; //microvolts
 

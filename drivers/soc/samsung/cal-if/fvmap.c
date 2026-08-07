@@ -617,6 +617,9 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 			} else if (strcmp(vclk->name, "dvfs_cp") == 0) {
 				if (old->table[j].rate == ice_cp_freqs[j])
 					old->table[j].volt = old->table[j].volt - (ice_cp[(j * 16) + ice_asv_scores_cp] * ice_uv_step);
+			} else if (strcmp(vclk->name, "dvfs_disp") == 0) {
+				if (old->table[j].rate == ice_disp_freqs[j])
+					old->table[j].volt = old->table[j].volt - (ice_disp[(j * 16) + ice_asv_scores_disp] * ice_uv_step);
 			}
 			#endif
 

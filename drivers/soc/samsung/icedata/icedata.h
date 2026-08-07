@@ -2,7 +2,7 @@
  *  IceCold Engine data file
  *  Targeted for CrownTrail
  *
- *  Revision B07
+ *  Revision B08
  */
 
 extern unsigned int ice_asv_scores_cl0;
@@ -10,6 +10,7 @@ extern unsigned int ice_asv_scores_cl1;
 extern unsigned int ice_asv_scores_g3d;
 extern unsigned int ice_asv_scores_mif;
 extern unsigned int ice_asv_scores_cp;
+extern unsigned int ice_asv_scores_disp;
 
 static unsigned int ice_cl0 [14*16] = {
 // asv scores                                              freq
@@ -94,4 +95,14 @@ static unsigned int ice_cp [4*16] = {
     0, 0, 0, 0, 0, 1, 2, 3, 4, 4, 4, 5, 0, 0, 0, 0,     //  950
     0, 0, 0, 0, 0, 1, 2, 3, 4, 4, 4, 5, 0, 0, 0, 0,     //  800
     0, 0, 0, 0, 0, 0, 1, 2, 2, 3, 3, 4, 0, 0, 0, 0,     //  533
+};
+
+static unsigned int ice_disp [5*16] = {
+// asv scores                                              freq
+//  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+    0, 0, 0, 0, 0, 2, 2, 3, 3, 3, 3, 3, 0, 0, 0, 0,     //  640
+    0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0,     //  534
+    0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 2, 0, 0, 0, 0,     //  400
+    0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0,     //  200
+    0, 0, 0, 0, 0, 2, 2, 3, 3, 3, 3, 3, 0, 0, 0, 0,     //  134
 };
