@@ -66,6 +66,3 @@ obj-$(CONFIG_ARCH_EXYNOS)	+= secmem.o
 
 # ICE
 obj-$(CONFIG_ICE)       += icedata/
-
-# Forcer
-obj-$(CONFIG_FORCER)       += forcer/
