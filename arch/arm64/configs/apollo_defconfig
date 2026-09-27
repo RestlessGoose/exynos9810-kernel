@@ -58,4 +58,3 @@ CONFIG_INCREMENTAL_FS=y
 # CrownTrail Features
 
 CONFIG_ICE=y
-CONFIG_FORCER=y

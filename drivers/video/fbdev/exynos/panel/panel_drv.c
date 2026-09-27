@@ -26,7 +26,6 @@
 #include <linux/of_gpio.h>
 #include <linux/of_address.h>
 #include <linux/ctype.h>
-#include <linux/forcer.h>
 #include <video/mipi_display.h>
 
 #ifdef CONFIG_DISP_PMIC_SSD
@@ -580,10 +579,6 @@ int panel_display_on(struct panel_device *panel)
 		goto do_exit;
 	}
 
-	#ifdef CONFIG_FORCER
-	forcer_handle_display_on();
-	#endif
-
 	mdnie_enable(&panel->mdnie);
 
 	ret = __panel_seq_display_on(panel);
@@ -622,10 +617,6 @@ static int panel_display_off(struct panel_device *panel)
 			__func__);
 	}
 	state->disp_on = PANEL_DISPLAY_OFF;
-
-	#ifdef CONFIG_FORCER
-	forcer_handle_display_off();
-	#endif
 
 	return 0;
 do_exit:
@@ -1393,9 +1384,6 @@ static int panel_update_doze(struct panel_device *panel)
 
 	if (updated) {
 		ret = __panel_seq_set_alpm(panel);
-		#ifdef CONFIG_FORCER
-		forcer_handle_display_alpm();
-		#endif
 		if (ret) {
 			panel_err("PANEL:ERR:%s, failed to write alpm\n",
 				__func__);
