@@ -87,8 +87,8 @@ static void dpu_bts_sum_all_decon_bw(struct decon_device *decon, u32 ch_bw[])
 	}
 }
 
-/* bus utilization 75% */
-#define BUS_UTIL	75
+/* bus utilization 67% */
+#define BUS_UTIL	67
 
 static void dpu_bts_find_max_disp_freq(struct decon_device *decon,
 		struct decon_reg_data *regs)
@@ -124,6 +124,16 @@ static void dpu_bts_find_max_disp_freq(struct decon_device *decon,
 
 	decon->bts.peak = max_disp_ch_bw;
 	decon->bts.max_disp_freq = max_disp_ch_bw * 100 / (16 * BUS_UTIL) + 1;
+
+	if (decon->bts.max_disp_freq >= 245 * KHZ)
+		decon->bts.max_disp_freq =
+			decon->bts.max_disp_freq * 220 / 100;
+	else if (decon->bts.max_disp_freq >= 215 * KHZ)
+		decon->bts.max_disp_freq =
+			decon->bts.max_disp_freq * 190 / 100;
+	else if (decon->bts.max_disp_freq >= 180 * KHZ)
+		decon->bts.max_disp_freq =
+			decon->bts.max_disp_freq * 175 / 100;
 
 	if (decon->dt.out_type == DECON_OUT_DP)
 		op_fps = decon->lcd_info->fps;
