@@ -45,7 +45,6 @@
 #endif
 
 #if KERNEL_VERSION(4, 16, 0) > LINUX_VERSION_CODE
-typedef unsigned int __poll_t;
 
 #ifndef HRTIMER_MODE_REL_SOFT
 #define HRTIMER_MODE_REL_SOFT HRTIMER_MODE_REL
