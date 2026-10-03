@@ -1787,9 +1787,9 @@ out:
 	if (!page)
 		return NULL;
 
-	mod_zone_page_state(page_zone(page),
+	mod_node_page_state(page_pgdat(page),
 		(s->flags & SLAB_RECLAIM_ACCOUNT) ?
-		(enum zone_stat_item)NR_SLAB_RECLAIMABLE : (enum zone_stat_item)NR_SLAB_UNRECLAIMABLE,
+		NR_SLAB_RECLAIMABLE : NR_SLAB_UNRECLAIMABLE,
 		1 << oo_order(oo));
 
 	inc_slabs_node(s, page_to_nid(page), page->objects);
@@ -1880,9 +1880,9 @@ static void __free_slab(struct kmem_cache *s, struct page *page)
 
 	kmemcheck_free_shadow(page, compound_order(page));
 
-	mod_zone_page_state(page_zone(page),
+	mod_node_page_state(page_pgdat(page),
 		(s->flags & SLAB_RECLAIM_ACCOUNT) ?
-		(enum zone_stat_item)NR_SLAB_RECLAIMABLE : (enum zone_stat_item)NR_SLAB_UNRECLAIMABLE,
+		NR_SLAB_RECLAIMABLE : NR_SLAB_UNRECLAIMABLE,
 		-pages);
 
 	__ClearPageSlabPfmemalloc(page);
