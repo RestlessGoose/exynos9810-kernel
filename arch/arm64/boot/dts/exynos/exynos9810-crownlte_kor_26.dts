@@ -5167,8 +5167,8 @@
 
 		energy-data {
 			ANANKE_ENERGY: ananke-energy {
-				capacity-mips = <272>;
-				power-coefficient = <160>;
+				capacity-mips = <410>;
+				power-coefficient = <125>;
 				capacity-mips-s = <215>;
 				power-coefficient-s = <130>;
 
