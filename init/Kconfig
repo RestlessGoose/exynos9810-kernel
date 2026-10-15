@@ -1516,6 +1516,11 @@ config SCHED_EMS
 
 	  If unsure, say N.
 
+config POWER_ENVELOPE
+	bool "Power envelope"
+	depends on SCHED_EMS
+	default n
+
 config DEFAULT_USE_ENERGY_AWARE
 	bool "Default to enabling the Energy Aware Scheduler feature"
 	default n
