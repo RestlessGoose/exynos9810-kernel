@@ -14,7 +14,6 @@
 
 #if defined(CONFIG_ICE)
 #include "../icedata/icedata.h"
-#include "../icedata/icestatics.h"
 #endif
 
 #define FVMAP_SIZE		(SZ_8K)
@@ -587,48 +586,17 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 		if (margin)
 			cal_dfs_set_volt_margin(i | ACPM_VCLK_TYPE, margin);
 
-		// ICE: Apply offset table
-		#if defined(CONFIG_ICE)
-		pr_info("[ICE] Applying undervolt offset tables...\n");
-		#endif
-
 		for (j = 0; j < fvmap_header[i].num_of_lv; j++) {
-			if (strcmp(vclk->name, "dvfs_mif") == 0) {
-				if (old->table[j].rate == 2002000)
-					old->table[j].volt = 768750;
-				if (old->table[j].rate == 2093000)
-					old->table[j].volt = 800000;
-				if (old->table[j].rate == 2094000)
-					old->table[j].volt = 800000;
-			}
-			#if defined(CONFIG_ICE)
-			if (strcmp(vclk->name, "dvfs_cpucl0") == 0) {
-				if (old->table[j].rate == ice_cl0_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_cl0[(j * 16) + ice_asv_scores_cl0] * ice_uv_step);
-			} else if (strcmp(vclk->name, "dvfs_cpucl1") == 0) {
-				if (old->table[j].rate == ice_cl1_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_cl1[(j * 16) + ice_asv_scores_cl1] * ice_uv_step);
-			} else if (strcmp(vclk->name, "dvfs_g3d") == 0) {
-				if (old->table[j].rate == ice_g3d_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_g3d[(j * 16) + ice_asv_scores_g3d] * ice_uv_step);
-			} else if (strcmp(vclk->name, "dvfs_mif") == 0) {
-				if (old->table[j].rate == ice_mif_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_mif[(j * 16) + ice_asv_scores_mif] * ice_uv_step);
-			} else if (strcmp(vclk->name, "dvfs_cp") == 0) {
-				if (old->table[j].rate == ice_cp_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_cp[(j * 16) + ice_asv_scores_cp] * ice_uv_step);
-			} else if (strcmp(vclk->name, "dvfs_disp") == 0) {
-				if (old->table[j].rate == ice_disp_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_disp[(j * 16) + ice_asv_scores_disp] * ice_uv_step);
-			}
-			#endif
+#if defined(CONFIG_ICE)
+			old->table[j].volt =
+				ice_adjust_voltage(vclk->name,
+						   old->table[j].rate,
+						   old->table[j].volt);
+#endif
 
 			new->table[j].rate = old->table[j].rate;
 			new->table[j].volt = old->table[j].volt;
 		}
-		#if defined(CONFIG_ICE)
-		pr_info("[ICE] Undervolt offsets applied.\n");
-		#endif
 
 		for (j = 0; j < fvmap_header[i].num_of_pll; j++) {
 			clks = sram_base + fvmap_header[i].o_members;
@@ -862,6 +830,9 @@ int fvmap_init(void __iomem *sram_base)
 	sram_fvmap_base = sram_base;
 	pr_info("%s:fvmap initialize %pK\n", __func__, sram_base);
 	fvmap_copy_from_sram(fvmap_base, sram_base);
+#if defined(CONFIG_ICE)
+	pr_info("[ICE] voltage profiles applied\n");
+#endif
 	print_fvmap(NULL, 0, 0);
 
 	kobj = kobject_create_and_add("fvmap", power_kobj);
