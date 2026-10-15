@@ -1521,6 +1521,11 @@ config POWER_ENVELOPE
 	depends on SCHED_EMS
 	default n
 
+config BOOST_LIMITER
+	bool "Boost limiter"
+	depends on SCHED_EMS
+	default n
+
 config DEFAULT_USE_ENERGY_AWARE
 	bool "Default to enabling the Energy Aware Scheduler feature"
 	default n
