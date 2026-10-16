@@ -746,6 +746,7 @@ struct rq {
 	unsigned int clock_skip_update;
 	u64 clock;
 	u64 clock_task;
+	u64 clock_task_mult;
 
 	atomic_t nr_iowait;
 
@@ -889,6 +890,14 @@ static inline u64 rq_clock_task(struct rq *rq)
 {
 	lockdep_assert_held(&rq->lock);
 	return rq->clock_task;
+}
+
+extern unsigned int sched_pelt_lshift;
+
+static inline u64 rq_clock_task_mult(struct rq *rq)
+{
+	lockdep_assert_held(&rq->lock);
+	return rq->clock_task_mult;
 }
 
 #define RQCF_REQ_SKIP	0x01
