@@ -1791,7 +1791,7 @@ static void __enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
 	}
 	rt_se->on_rq = 1;
 
-	update_rt_load_avg(rq_clock_task(rq_of_rt_rq(rt_rq)), rt_se);
+	update_rt_load_avg(rq_clock_task_mult(rq_of_rt_rq(rt_rq)), rt_se);
 
 	if (rt_entity_is_task(rt_se) && !rt_se->avg.last_update_time)
 		attach_rt_entity_load_avg(rt_rq, rt_se);
@@ -1810,7 +1810,7 @@ static void __dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
 	}
 	rt_se->on_rq = 0;
 
-	update_rt_load_avg(rq_clock_task(rq_of_rt_rq(rt_rq)), rt_se);
+	update_rt_load_avg(rq_clock_task_mult(rq_of_rt_rq(rt_rq)), rt_se);
 
 	dec_rt_tasks(rt_se, rt_rq);
 }
@@ -2132,7 +2132,7 @@ static void attach_task_rt_rq(struct task_struct *p)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
 	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
-	u64 now = rq_clock_task(rq_of_rt_rq(rt_rq));
+	u64 now = rq_clock_task_mult(rq_of_rt_rq(rt_rq));
 
 	update_rt_load_avg(now, rt_se);
 	attach_rt_entity_load_avg(rt_rq, rt_se);
@@ -2142,7 +2142,7 @@ static void detach_task_rt_rq(struct task_struct *p)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
 	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
-	u64 now = rq_clock_task(rq_of_rt_rq(rt_rq));
+	u64 now = rq_clock_task_mult(rq_of_rt_rq(rt_rq));
 
 	update_rt_load_avg(now, rt_se);
 	detach_rt_entity_load_avg(rt_rq, rt_se);
@@ -2333,11 +2333,12 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 	struct task_struct *p;
 	struct rt_rq *rt_rq  = &rq->rt;
 	u64 now = rq_clock_task(rq);
+	u64 pelt_now = rq_clock_task_mult(rq);
 
 	do {
 		rt_se = pick_next_rt_entity(rq, rt_rq);
 		BUG_ON(!rt_se);
-		update_rt_load_avg(now, rt_se);
+		update_rt_load_avg(pelt_now, rt_se);
 		rt_rq->curr = rt_se;
 		rt_rq = group_rt_rq(rt_se);
 	} while (rt_rq);
@@ -2396,7 +2397,7 @@ pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	queue_push_tasks(rq);
 
 	if (p)
-		update_rt_rq_load_avg(rq_clock_task(rq), cpu_of(rq), rt_rq,
+		update_rt_rq_load_avg(rq_clock_task_mult(rq), cpu_of(rq), rt_rq,
 					rq->curr->sched_class == &rt_sched_class);
 
 	clear_victim_flag(p);
@@ -2407,7 +2408,7 @@ pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 static void put_prev_task_rt(struct rq *rq, struct task_struct *p)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
-	u64 now = rq_clock_task(rq);
+	u64 now = rq_clock_task_mult(rq);
 
 	update_curr_rt(rq);
 
@@ -3616,7 +3617,7 @@ static void watchdog(struct rq *rq, struct task_struct *p)
 static void task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
-	u64 now = rq_clock_task(rq);
+	u64 now = rq_clock_task_mult(rq);
 	int cpu = cpu_of(rq);
 
 	update_curr_rt(rq);

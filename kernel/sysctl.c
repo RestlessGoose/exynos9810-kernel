@@ -483,6 +483,13 @@ static struct ctl_table kern_table[] = {
 		.extra2		= &one,
 	},
 #endif /* CONFIG_SCHEDSTATS */
+	{
+		.procname	= "sched_pelt_multiplier",
+		.data		= &sysctl_sched_pelt_multiplier,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= sched_pelt_multiplier,
+	},
 #endif /* CONFIG_SMP */
 #ifdef CONFIG_NUMA_BALANCING
 	{

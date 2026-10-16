@@ -138,6 +138,51 @@ const_debug unsigned int sysctl_sched_features =
  */
 const_debug unsigned int sysctl_sched_nr_migrate = 32;
 
+unsigned int sysctl_sched_pelt_multiplier = 2;
+__read_mostly unsigned int sched_pelt_lshift = 1;
+
+int sched_pelt_multiplier(struct ctl_table *table, int write,
+			  void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	static DEFINE_MUTEX(mutex);
+	unsigned int old, shift;
+	int ret;
+
+	mutex_lock(&mutex);
+
+	old = sysctl_sched_pelt_multiplier;
+	ret = proc_dointvec(table, write, buffer, lenp, ppos);
+	if (ret)
+		goto restore;
+	if (!write)
+		goto out;
+
+	switch (sysctl_sched_pelt_multiplier) {
+	case 1:
+		shift = 0;
+		break;
+	case 2:
+		shift = 1;
+		break;
+	case 4:
+		shift = 2;
+		break;
+	default:
+		ret = -EINVAL;
+		goto restore;
+	}
+
+	WRITE_ONCE(sched_pelt_lshift, shift);
+	goto out;
+
+restore:
+	sysctl_sched_pelt_multiplier = old;
+out:
+	mutex_unlock(&mutex);
+
+	return ret;
+}
+
 /*
  * period over which we average the RT time consumption, measured
  * in ms.
@@ -845,6 +890,7 @@ static void update_rq_clock_task(struct rq *rq, s64 delta)
 #endif
 
 	rq->clock_task += delta;
+	rq->clock_task_mult += delta << READ_ONCE(sched_pelt_lshift);
 
 #if defined(CONFIG_IRQ_TIME_ACCOUNTING) || defined(CONFIG_PARAVIRT_TIME_ACCOUNTING)
 	if ((irq_delta + steal) && sched_feat(NONTASK_CAPACITY))

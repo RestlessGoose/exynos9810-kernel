@@ -4302,7 +4302,7 @@ static inline u64 cfs_rq_clock_task(struct cfs_rq *cfs_rq)
 	if (unlikely(cfs_rq->throttle_count))
 		return cfs_rq->throttled_clock_task - cfs_rq->throttled_clock_task_time;
 
-	return rq_clock_task(rq_of(cfs_rq)) - cfs_rq->throttled_clock_task_time;
+	return rq_clock_task_mult(rq_of(cfs_rq)) - cfs_rq->throttled_clock_task_time;
 }
 
 /* returns 0 on failure to allocate runtime */
@@ -4442,7 +4442,7 @@ static int tg_unthrottle_up(struct task_group *tg, void *data)
 	cfs_rq->throttle_count--;
 	if (!cfs_rq->throttle_count) {
 		/* adjust cfs_rq_clock_task() */
-		cfs_rq->throttled_clock_task_time += rq_clock_task(rq) -
+		cfs_rq->throttled_clock_task_time += rq_clock_task_mult(rq) -
 					     cfs_rq->throttled_clock_task;
 	}
 
@@ -4456,7 +4456,7 @@ static int tg_throttle_down(struct task_group *tg, void *data)
 
 	/* group is entering throttled state, stop time */
 	if (!cfs_rq->throttle_count)
-		cfs_rq->throttled_clock_task = rq_clock_task(rq);
+		cfs_rq->throttled_clock_task = rq_clock_task_mult(rq);
 	cfs_rq->throttle_count++;
 
 	return 0;
@@ -4876,7 +4876,7 @@ static void sync_throttle(struct task_group *tg, int cpu)
 	pcfs_rq = tg->parent->cfs_rq[cpu];
 
 	cfs_rq->throttle_count = pcfs_rq->throttle_count;
-	cfs_rq->throttled_clock_task = rq_clock_task(cpu_rq(cpu));
+	cfs_rq->throttled_clock_task = rq_clock_task_mult(cpu_rq(cpu));
 }
 
 /* conditionally throttle active cfs_rq's from put_prev_entity() */
@@ -5070,7 +5070,7 @@ static void walt_fixup_cumulative_runnable_avg_fair(struct rq *rq,
 #else /* CONFIG_CFS_BANDWIDTH */
 static inline u64 cfs_rq_clock_task(struct cfs_rq *cfs_rq)
 {
-	return rq_clock_task(rq_of(cfs_rq));
+	return rq_clock_task_mult(rq_of(cfs_rq));
 }
 
 static void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec) {}
@@ -8888,7 +8888,7 @@ static void update_blocked_averages(int cpu)
 		if (se && !skip_blocked_update(se))
 			update_load_avg(se, 0);
 	}
-	update_rt_rq_load_avg(rq_clock_task(rq), cpu, &rq->rt, 0);
+	update_rt_rq_load_avg(rq_clock_task_mult(rq), cpu, &rq->rt, 0);
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 
@@ -8948,7 +8948,7 @@ static inline void update_blocked_averages(int cpu)
 	raw_spin_lock_irqsave(&rq->lock, flags);
 	update_rq_clock(rq);
 	update_cfs_rq_load_avg(cfs_rq_clock_task(cfs_rq), cfs_rq, true);
-	update_rt_rq_load_avg(rq_clock_task(rq), cpu, &rq->rt, 0);
+	update_rt_rq_load_avg(rq_clock_task_mult(rq), cpu, &rq->rt, 0);
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 
@@ -9337,7 +9337,7 @@ static inline void update_cpu_stats_if_tickless(struct rq *rq)
 		raw_spin_lock(&rq->lock);
 		update_rq_clock(rq);
 		cpu_load_update_idle(rq);
-		update_cfs_rq_load_avg(rq->clock_task, &rq->cfs, false);
+		update_cfs_rq_load_avg(rq_clock_task_mult(rq), &rq->cfs, false);
 		raw_spin_unlock(&rq->lock);
 	}
 }
