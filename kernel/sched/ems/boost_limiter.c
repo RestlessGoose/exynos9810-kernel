@@ -1,1030 +1,330 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Exynos 9810 CL1 Boost Limiter
- *
- * Three-layer boost control for the Exynos M3 cluster:
- *
- *   1. Short transient boost token
- *
- *      2314 MHz is treated as a latency-response frequency only.
- *      A workload may use it for a small amount of actual high-frequency
- *      residency before being limited to 2106 MHz.
- *
- *   2. Chassis thermal-energy budget
- *
- *      Sustained CL1 power fills a leaky energy bucket. As the bucket fills,
- *      the allowed maximum frequency progressively falls:
- *
- *          2106 -> 2002 -> 1794 -> 1586 MHz
- *
- *   3. Battery/chassis thermal headroom
- *
- *      Battery temperature controls both:
- *
- *        a) the lowest cap the thermal limiter may impose
- *        b) the amount of CL1 dynamic power considered sustainable
- *
- *          < 30 C:
- *              floor       = 1924 MHz
- *              sustainable = 650 mW
- *
- *          30-35 C:
- *              floor       = 1794 MHz
- *              sustainable = 500 mW
- *
- *          35-38 C:
- *              floor       = 1690 MHz
- *              sustainable = 350 mW
- *
- *          >= 38 C:
- *              floor       = 1586 MHz
- *              sustainable = 250 mW
- *
- *      Battery temperature is used as a slow chassis thermal proxy.
- *      The energy bucket remains responsible for fast preventative control.
- *
- * This file never changes cpufreq directly and owns no PM-QoS request.
- * power_envelope.c calls boost_limiter_get_limit() and combines the returned
- * suggestion with its instantaneous multicore electrical envelope.
+ * Exynos 9810 M3 transient boost and first-order thermal-headroom proxy.
+ * Called by power_envelope.c; this file owns NO worker and NO PM-QoS vote.
+ * Battery power measurements are NOT a die-temperature or OCP measurement.
  */
-
-#include <linux/cpu.h>
-#include <linux/cpufreq.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/math64.h>
+#include <linux/of.h>
 #include <linux/power_supply.h>
 #include <linux/sched.h>
-#include <linux/workqueue.h>
+#include <linux/string.h>
+#include <linux/types.h>
 
 #include "ems.h"
+#include "cl1_power_model.h"
 
+#define BL_DT_COMPAT            "samsung,exynos9810-cl1-envelope"
+#define BL_STAGES               5
+#define BL_TEMP_STATES          4
+#define BL_MAX_POWER_MW         12000U
 
-#define BL_FIRST_CPU                    4
-#define BL_LAST_CPU                     7
-
-
-/*
- * HZ=100, therefore 20 ms corresponds to two jiffies.
- *
- * This is fast enough for the transient boost-token logic and far faster
- * than any meaningful chassis thermal time constant.
- */
-#define BL_INTERVAL_MS                  20
-
-
-/*
- * Frequency stages.
- *
- * These are maximum-frequency suggestions only. schedutil remains free to
- * select any lower frequency.
- */
-#define BL_FREQ_MAX                     2314000
-#define BL_FREQ_HIGH                    2106000
-#define BL_FREQ_MED                     2002000
-#define BL_FREQ_LOW                     1794000
-#define BL_FREQ_DEEP                    1586000
-
-
-/*
- * --------------------------------------------------------------------------
- * 2314 MHz transient boost token
- * --------------------------------------------------------------------------
- *
- * Three 20 ms observations give approximately 60 ms of actual residency
- * above 2106 MHz.
- *
- * Once consumed, 2314 remains unavailable until CL1 spends a meaningful
- * period at very low utilization.
- */
-#define BL_SPIKE_BUDGET_MS              60
-#define BL_SPIKE_REARM_MS               250
-
-#define BL_SPIKE_ACTIVE_PCT              20
-#define BL_SPIKE_REARM_PCT                8
-
-
-/*
- * --------------------------------------------------------------------------
- * Thermal-energy bucket
- * --------------------------------------------------------------------------
- *
- * Rough synthetic thermal-energy capacity allocated to CL1 boosting.
- */
-#define BL_BUCKET_MAX_UJ                6000000ULL
-
-
-/*
- * Temperature-dependent sustainable dynamic-power allowance.
- *
- * This is not intended to be a literal physical measurement of chassis
- * dissipation. It is the amount of estimated CL1 dynamic power that the
- * controller will tolerate without increasing heat debt.
- *
- * As the chassis gets warmer, progressively less sustained power is allowed.
- */
-#define BL_SUSTAINABLE_COOL_MW          650U
-#define BL_SUSTAINABLE_WARM_MW          500U
-#define BL_SUSTAINABLE_HOT_MW           350U
-#define BL_SUSTAINABLE_VHOT_MW          250U
-
-
-/*
- * Thermal-state entry thresholds.
- */
-#define BL_ENTER_HIGH_PCT               15
-#define BL_ENTER_MED_PCT                30
-#define BL_ENTER_LOW_PCT                50
-#define BL_ENTER_DEEP_PCT               70
-
-
-/*
- * Recovery thresholds.
- *
- * Asymmetric hysteresis prevents repeated cap changes near a boundary.
- */
-#define BL_EXIT_HIGH_PCT                 8
-#define BL_EXIT_MED_PCT                 20
-#define BL_EXIT_LOW_PCT                 40
-#define BL_EXIT_DEEP_PCT                60
-
-
-/*
- * --------------------------------------------------------------------------
- * Battery/chassis temperature control
- * --------------------------------------------------------------------------
- *
- * POWER_SUPPLY_PROP_TEMP is expected in tenths of a degree Celsius.
- *
- * Heating thresholds:
- *
- *      300 = 30.0 C
- *      350 = 35.0 C
- *      380 = 38.0 C
- *
- * Recovery thresholds sit 1 C lower.
- */
-#define BL_TEMP_30C                     300
-#define BL_TEMP_35C                     350
-#define BL_TEMP_38C                     380
-
-#define BL_TEMP_29C                     290
-#define BL_TEMP_34C                     340
-#define BL_TEMP_37C                     370
-
-
-/*
- * Reject clearly bogus sensor readings rather than accidentally granting
- * the coldest performance policy because of a broken/early sensor value.
- */
-#define BL_TEMP_VALID_MIN              (-200)
-#define BL_TEMP_VALID_MAX               800
-
-
-/*
- * Battery temperature is extremely slow compared with scheduler activity.
- */
-#define BL_TEMP_UPDATE_MS               500
-
-
-/*
- * Temperature-dependent lowest allowed limiter cap.
- */
-#define BL_TEMP_FLOOR_COOL              1924000
-#define BL_TEMP_FLOOR_WARM              1794000
-#define BL_TEMP_FLOOR_HOT               1690000
-#define BL_TEMP_FLOOR_VHOT              1586000
-
-
-struct bl_power_point {
-	unsigned int freq_khz;
-	unsigned int power_mw;
+struct bl_config {
+	u32 spike_ms;
+	u32 rearm_ms;
+	u32 spike_active_pct;
+	u32 spike_quiet_pct;
+	u32 bucket_capacity_uj;
+	u32 thermal_tau_ms;
+	u32 shared_pct;
+	u32 stages_khz[BL_STAGES];
+	u32 enter_pct[BL_STAGES - 1];
+	u32 exit_pct[BL_STAGES - 1];
+	u32 battery_thresholds[BL_TEMP_STATES - 1]; /* 0.1 C */
+	u32 battery_hysteresis; /* 0.1 C */
+	u32 sustainable_mw[BL_TEMP_STATES];
+	u32 temp_ceiling_khz[BL_TEMP_STATES];
 };
 
-
-/*
- * Corrected single-M3 incremental power estimates from freqbench.
- *
- * Small low-frequency measurement irregularities are smoothed while
- * retaining the measured overall curve.
- */
-static const struct bl_power_point bl_power_table[] = {
-	{  598000,  220 },
-	{  650000,  225 },
-	{  741000,  283 },
-	{  858000,  315 },
-	{  962000,  336 },
-	{ 1066000,  390 },
-	{ 1170000,  390 },
-	{ 1261000,  395 },
-	{ 1469000,  511 },
-	{ 1586000,  617 },
-	{ 1690000,  706 },
-	{ 1794000,  800 },
-	{ 1924000,  914 },
-	{ 2002000, 1026 },
-	{ 2106000, 1147 },
-	{ 2314000, 1573 },
+static struct bl_config bl_cfg = {
+	.spike_ms = 40,
+	.rearm_ms = 250,
+	.spike_active_pct = 20,
+	.spike_quiet_pct = 8,
+	.bucket_capacity_uj = 6000000,
+	.thermal_tau_ms = 5000,
+	.shared_pct = 20,
+	.stages_khz = { 2314000, 2106000, 2002000, 1794000, 1586000 },
+	.enter_pct = { 15, 30, 50, 70 },
+	.exit_pct = { 8, 20, 40, 60 },
+	.battery_thresholds = { 300, 350, 380 },
+	.battery_hysteresis = 10,
+	.sustainable_mw = { 650, 500, 350, 250 },
+	.temp_ceiling_khz = { 2314000, 2314000, 2002000, 1794000 },
 };
 
-
-enum bl_state {
-	BL_STATE_MAX = 0,
-	BL_STATE_HIGH,
-	BL_STATE_MED,
-	BL_STATE_LOW,
-	BL_STATE_DEEP,
-};
-
-
-enum bl_temp_state {
-	BL_TEMP_COOL = 0,
-	BL_TEMP_WARM,
-	BL_TEMP_HOT,
-	BL_TEMP_VHOT,
-};
-
-
-static struct delayed_work bl_work;
-
-
-/*
- * --------------------------------------------------------------------------
- * Energy-bucket state
- * --------------------------------------------------------------------------
- */
-
-static u64 bl_heat_debt_uj;
-
-static enum bl_state bl_state = BL_STATE_MAX;
-
-static unsigned int bl_thermal_limit_khz = BL_FREQ_MAX;
-
-
-/*
- * --------------------------------------------------------------------------
- * 2314 MHz transient-token state
- * --------------------------------------------------------------------------
- */
-
+static struct power_supply *bl_battery;
+static bool bl_has_temperature;
+static unsigned int bl_temp_state = 1;  /* startup: warm, not falsely cold */
+static unsigned int bl_temp_elapsed_ms = 500;
+static unsigned int bl_stage;
+static u64 bl_energy_uj;
 static unsigned int bl_spike_used_ms;
-static unsigned int bl_spike_quiet_ms;
-
+static unsigned int bl_quiet_ms;
 static bool bl_spike_armed = true;
+static unsigned int bl_cap_khz = 2314000;
 
-static unsigned int bl_spike_limit_khz = BL_FREQ_MAX;
-
-
-/*
- * --------------------------------------------------------------------------
- * Battery/chassis state
- * --------------------------------------------------------------------------
- *
- * Until the first valid battery reading arrives, use the WARM policy rather
- * than assuming the device is completely cold.
- */
-
-static struct power_supply *bl_battery_psy;
-
-static enum bl_temp_state bl_temp_state = BL_TEMP_WARM;
-
-static unsigned int bl_temp_floor_khz = BL_TEMP_FLOOR_WARM;
-
-static unsigned int bl_sustainable_mw = BL_SUSTAINABLE_WARM_MW;
-
-static unsigned int bl_temp_elapsed_ms;
-
-static bool bl_temp_valid;
-
-static int bl_battery_temp;
-
-
-/*
- * Return estimated single-M3 incremental dynamic power for the current
- * cluster frequency.
- *
- * If the current value falls between measured OPPs, round upward to remain
- * conservative.
- */
-static unsigned int bl_power_for_freq(unsigned int freq)
+static bool bl_valid_frequencies(const u32 *freqs, unsigned int n)
 {
-	int i;
+	unsigned int i;
 
-	if (freq <= bl_power_table[0].freq_khz)
-		return bl_power_table[0].power_mw;
-
-	for (i = 1; i < ARRAY_SIZE(bl_power_table); i++) {
-		if (freq <= bl_power_table[i].freq_khz)
-			return bl_power_table[i].power_mw;
+	for (i = 0; i < n; i++) {
+		if (freqs[i] < 598000 || freqs[i] > 2314000)
+			return false;
+		if (i && freqs[i] > freqs[i - 1])
+			return false;
 	}
-
-	return bl_power_table[ARRAY_SIZE(bl_power_table) - 1].power_mw;
+	return true;
 }
 
-
-/*
- * One M3's normalized scheduler occupancy.
- *
- * EMS tracks USS and SSE separately, so account for both classes.
- */
-static unsigned long bl_cpu_activity(int cpu)
+static void __init bl_read_dts(void)
 {
-	unsigned long uss;
-	unsigned long sse;
-	unsigned long activity;
+	struct device_node *np;
+	u32 v, tmp[BL_STAGES];
+	unsigned int i;
+	bool okay;
 
-	if (!cpu_online(cpu))
-		return 0;
-
-	uss = ml_cpu_util_ratio(cpu, 0);
-	sse = ml_cpu_util_ratio(cpu, 1);
-
-	activity = uss + sse;
-
-	return min_t(unsigned long,
-		     activity,
-		     SCHED_CAPACITY_SCALE);
-}
-
-
-/*
- * Total CL1 occupancy:
- *
- *      1024 ~= one fully busy M3
- *      2048 ~= two
- *      3072 ~= three
- *      4096 ~= four
- */
-static unsigned long bl_cluster_activity(void)
-{
-	unsigned long total;
-	int cpu;
-
-	total = 0;
-
-	for (cpu = BL_FIRST_CPU; cpu <= BL_LAST_CPU; cpu++)
-		total += bl_cpu_activity(cpu);
-
-	return total;
-}
-
-
-static unsigned long bl_pct_to_util(unsigned int pct)
-{
-	return SCHED_CAPACITY_SCALE * pct / 100;
-}
-
-
-/*
- * --------------------------------------------------------------------------
- * 2314 MHz transient token
- * --------------------------------------------------------------------------
- *
- * Credit is consumed only while:
- *
- *      actual CL1 frequency > 2106 MHz
- *
- * and meaningful M3 activity exists.
- *
- * Merely having a runnable task does not consume the token if schedutil
- * decides the task does not need the highest OPP.
- */
-static void bl_update_spike(unsigned int freq, unsigned long activity)
-{
-	unsigned long active_threshold;
-	unsigned long rearm_threshold;
-
-	active_threshold = bl_pct_to_util(BL_SPIKE_ACTIVE_PCT);
-	rearm_threshold = bl_pct_to_util(BL_SPIKE_REARM_PCT);
-
-	if (bl_spike_armed) {
-		if (freq > BL_FREQ_HIGH &&
-		    activity >= active_threshold) {
-			bl_spike_used_ms += BL_INTERVAL_MS;
-
-			if (bl_spike_used_ms >= BL_SPIKE_BUDGET_MS)
-				bl_spike_used_ms = BL_SPIKE_BUDGET_MS;
-
-			bl_spike_quiet_ms = 0;
-		}
-
-		if (bl_spike_used_ms >= BL_SPIKE_BUDGET_MS) {
-			bl_spike_armed = false;
-			bl_spike_quiet_ms = 0;
-
-			WRITE_ONCE(bl_spike_limit_khz,
-				   BL_FREQ_HIGH);
-			return;
-		}
-
-		/*
-		 * Partially consumed credit is restored only after a genuine
-		 * low-utilization period.
-		 */
-		if (activity <= rearm_threshold) {
-			bl_spike_quiet_ms += BL_INTERVAL_MS;
-
-			if (bl_spike_quiet_ms >= BL_SPIKE_REARM_MS) {
-				bl_spike_used_ms = 0;
-				bl_spike_quiet_ms = 0;
-			}
-		} else {
-			bl_spike_quiet_ms = 0;
-		}
-
-		WRITE_ONCE(bl_spike_limit_khz,
-			   BL_FREQ_MAX);
-
+	np = of_find_compatible_node(NULL, NULL, BL_DT_COMPAT);
+	if (!np)
 		return;
+
+#define BL_READ_U32(prop, field, low, high) \
+	do { \
+		if (!of_property_read_u32(np, prop, &v) && \
+		    v >= (low) && v <= (high)) \
+			bl_cfg.field = v; \
+	} while (0)
+	BL_READ_U32("samsung,spike-budget-ms", spike_ms, 10U, 500U);
+	BL_READ_U32("samsung,spike-rearm-ms", rearm_ms, 20U, 10000U);
+	BL_READ_U32("samsung,spike-active-pct", spike_active_pct, 1U, 100U);
+	BL_READ_U32("samsung,spike-quiet-pct", spike_quiet_pct, 0U, 50U);
+	BL_READ_U32("samsung,thermal-capacity-uj", bucket_capacity_uj, 100000U, 50000000U);
+	BL_READ_U32("samsung,thermal-tau-ms", thermal_tau_ms, 500U, 60000U);
+	BL_READ_U32("samsung,shared-power-pct", shared_pct, 0U, 100U);
+	BL_READ_U32("samsung,battery-temp-hysteresis", battery_hysteresis, 0U, 30U);
+#undef BL_READ_U32
+
+	if (bl_cfg.spike_quiet_pct >= bl_cfg.spike_active_pct) {
+		bl_cfg.spike_active_pct = 20;
+		bl_cfg.spike_quiet_pct = 8;
 	}
 
+	if (!of_property_read_u32_array(np, "samsung,thermal-stages-khz",
+					 tmp, BL_STAGES) &&
+	    bl_valid_frequencies(tmp, BL_STAGES))
+		memcpy(bl_cfg.stages_khz, tmp, sizeof(bl_cfg.stages_khz));
 
-	/*
-	 * Token exhausted.
-	 *
-	 * Stay capped at 2106 until CL1 remains quiet for the entire rearm
-	 * interval.
-	 */
-	WRITE_ONCE(bl_spike_limit_khz,
-		   BL_FREQ_HIGH);
+	if (!of_property_read_u32_array(np, "samsung,thermal-enter-pct", tmp,
+					 BL_STAGES - 1)) {
+		okay = true;
+		for (i = 0; i < BL_STAGES - 1; i++)
+			if (tmp[i] > 100 || (i && tmp[i] <= tmp[i - 1]))
+				okay = false;
+		if (okay)
+			memcpy(bl_cfg.enter_pct, tmp, sizeof(bl_cfg.enter_pct));
+	}
+	if (!of_property_read_u32_array(np, "samsung,thermal-exit-pct", tmp,
+					 BL_STAGES - 1)) {
+		okay = true;
+		for (i = 0; i < BL_STAGES - 1; i++)
+			if (tmp[i] >= bl_cfg.enter_pct[i] ||
+			    (i && tmp[i] <= tmp[i - 1]))
+				okay = false;
+		if (okay)
+			memcpy(bl_cfg.exit_pct, tmp, sizeof(bl_cfg.exit_pct));
+	}
 
-	if (activity <= rearm_threshold) {
-		bl_spike_quiet_ms += BL_INTERVAL_MS;
-
-		if (bl_spike_quiet_ms >= BL_SPIKE_REARM_MS) {
-			bl_spike_armed = true;
-			bl_spike_used_ms = 0;
-			bl_spike_quiet_ms = 0;
-
-			WRITE_ONCE(bl_spike_limit_khz,
-				   BL_FREQ_MAX);
+	/* Keep hysteresis coherent if only one threshold array was overridden. */
+	for (i = 0; i < BL_STAGES - 1; i++) {
+		if (bl_cfg.exit_pct[i] >= bl_cfg.enter_pct[i]) {
+			static const u32 default_enter[] = { 15, 30, 50, 70 };
+			static const u32 default_exit[] = { 8, 20, 40, 60 };
+			memcpy(bl_cfg.enter_pct, default_enter,
+			       sizeof(bl_cfg.enter_pct));
+			memcpy(bl_cfg.exit_pct, default_exit,
+			       sizeof(bl_cfg.exit_pct));
+			break;
 		}
-	} else {
-		bl_spike_quiet_ms = 0;
-	}
-}
-
-
-/*
- * --------------------------------------------------------------------------
- * Temperature state
- * --------------------------------------------------------------------------
- */
-
-static void bl_set_temp_state(enum bl_temp_state state)
-{
-	bl_temp_state = state;
-
-	switch (state) {
-	case BL_TEMP_COOL:
-		WRITE_ONCE(bl_temp_floor_khz,
-			   BL_TEMP_FLOOR_COOL);
-
-		WRITE_ONCE(bl_sustainable_mw,
-			   BL_SUSTAINABLE_COOL_MW);
-		break;
-
-
-	case BL_TEMP_WARM:
-		WRITE_ONCE(bl_temp_floor_khz,
-			   BL_TEMP_FLOOR_WARM);
-
-		WRITE_ONCE(bl_sustainable_mw,
-			   BL_SUSTAINABLE_WARM_MW);
-		break;
-
-
-	case BL_TEMP_HOT:
-		WRITE_ONCE(bl_temp_floor_khz,
-			   BL_TEMP_FLOOR_HOT);
-
-		WRITE_ONCE(bl_sustainable_mw,
-			   BL_SUSTAINABLE_HOT_MW);
-		break;
-
-
-	case BL_TEMP_VHOT:
-	default:
-		WRITE_ONCE(bl_temp_floor_khz,
-			   BL_TEMP_FLOOR_VHOT);
-
-		WRITE_ONCE(bl_sustainable_mw,
-			   BL_SUSTAINABLE_VHOT_MW);
-		break;
-	}
-}
-
-
-/*
- * Initial classification uses the exact requested temperature thresholds.
- *
- * Hysteresis is used after the first valid classification.
- */
-static enum bl_temp_state bl_classify_temp(int temp)
-{
-	if (temp < BL_TEMP_30C)
-		return BL_TEMP_COOL;
-
-	if (temp < BL_TEMP_35C)
-		return BL_TEMP_WARM;
-
-	if (temp < BL_TEMP_38C)
-		return BL_TEMP_HOT;
-
-	return BL_TEMP_VHOT;
-}
-
-
-static void bl_update_temp_state(int temp)
-{
-	enum bl_temp_state new_state;
-
-	if (!bl_temp_valid) {
-		bl_temp_valid = true;
-
-		bl_set_temp_state(bl_classify_temp(temp));
-
-		return;
 	}
 
-	new_state = bl_temp_state;
+	if (!of_property_read_u32_array(np, "samsung,battery-thresholds-deci-c",
+					 tmp, BL_TEMP_STATES - 1) &&
+	    tmp[0] >= 100 && tmp[0] < tmp[1] &&
+	    tmp[1] < tmp[2] && tmp[2] <= 600)
+		memcpy(bl_cfg.battery_thresholds, tmp,
+		       sizeof(bl_cfg.battery_thresholds));
 
-	switch (bl_temp_state) {
-	case BL_TEMP_COOL:
-		/*
-		 * Allow direct jumps to a hotter state if temperature rises
-		 * substantially between measurements.
-		 */
-		if (temp >= BL_TEMP_38C)
-			new_state = BL_TEMP_VHOT;
-		else if (temp >= BL_TEMP_35C)
-			new_state = BL_TEMP_HOT;
-		else if (temp >= BL_TEMP_30C)
-			new_state = BL_TEMP_WARM;
-
-		break;
-
-
-	case BL_TEMP_WARM:
-		if (temp >= BL_TEMP_38C)
-			new_state = BL_TEMP_VHOT;
-		else if (temp >= BL_TEMP_35C)
-			new_state = BL_TEMP_HOT;
-		else if (temp <= BL_TEMP_29C)
-			new_state = BL_TEMP_COOL;
-
-		break;
-
-
-	case BL_TEMP_HOT:
-		if (temp >= BL_TEMP_38C)
-			new_state = BL_TEMP_VHOT;
-		else if (temp <= BL_TEMP_29C)
-			new_state = BL_TEMP_COOL;
-		else if (temp <= BL_TEMP_34C)
-			new_state = BL_TEMP_WARM;
-
-		break;
-
-
-	case BL_TEMP_VHOT:
-	default:
-		/*
-		 * Likewise, allow direct recovery if it cooled dramatically.
-		 */
-		if (temp <= BL_TEMP_29C)
-			new_state = BL_TEMP_COOL;
-		else if (temp <= BL_TEMP_34C)
-			new_state = BL_TEMP_WARM;
-		else if (temp <= BL_TEMP_37C)
-			new_state = BL_TEMP_HOT;
-
-		break;
+	if (!of_property_read_u32_array(np, "samsung,sustainable-power-mw",
+					 tmp, BL_TEMP_STATES)) {
+		okay = true;
+		for (i = 0; i < BL_TEMP_STATES; i++)
+			if (!tmp[i] || tmp[i] > BL_MAX_POWER_MW ||
+			    (i && tmp[i] > tmp[i - 1]))
+				okay = false;
+		if (okay)
+			memcpy(bl_cfg.sustainable_mw, tmp,
+			       sizeof(bl_cfg.sustainable_mw));
 	}
 
-	if (new_state != bl_temp_state)
-		bl_set_temp_state(new_state);
+	if (!of_property_read_u32_array(np, "samsung,battery-ceiling-khz",
+					 tmp, BL_TEMP_STATES) &&
+	    bl_valid_frequencies(tmp, BL_TEMP_STATES))
+		memcpy(bl_cfg.temp_ceiling_khz, tmp, sizeof(bl_cfg.temp_ceiling_khz));
+
+	of_node_put(np);
 }
 
-
-/*
- * Read battery temperature in tenths of a degree Celsius.
- */
-static int bl_read_battery_temp(int *temp)
+static int bl_battery_temperature(int *temp)
 {
-	union power_supply_propval val;
+	union power_supply_propval value;
 	int ret;
 
-	if (!bl_battery_psy)
-		bl_battery_psy = power_supply_get_by_name("battery");
-
-	if (!bl_battery_psy)
+	if (!bl_battery)
+		bl_battery = power_supply_get_by_name("battery");
+	if (!bl_battery)
 		return -ENODEV;
-
-	ret = power_supply_get_property(bl_battery_psy,
-					POWER_SUPPLY_PROP_TEMP,
-					&val);
-
-	if (ret)
-		return ret;
-
-	/*
-	 * Ignore obviously invalid values.
-	 *
-	 * This is especially useful during early boot if the battery driver
-	 * temporarily exposes nonsense before it has fully initialized.
-	 */
-	if (val.intval < BL_TEMP_VALID_MIN ||
-	    val.intval > BL_TEMP_VALID_MAX)
-		return -EINVAL;
-
-	*temp = val.intval;
-
+	ret = power_supply_get_property(bl_battery, POWER_SUPPLY_PROP_TEMP,
+					&value);
+	if (ret || value.intval < -200 || value.intval > 800)
+		return ret ? ret : -EINVAL;
+	*temp = value.intval;
 	return 0;
 }
 
-
-static void bl_update_temperature(void)
+static void bl_update_temperature(unsigned int dt_ms)
 {
-	int temp;
-	int ret;
+	int temperature;
+	unsigned int state;
 
-	bl_temp_elapsed_ms += BL_INTERVAL_MS;
-
-	if (bl_temp_elapsed_ms < BL_TEMP_UPDATE_MS)
+	bl_temp_elapsed_ms += dt_ms;
+	if (bl_temp_elapsed_ms < 500)
+		return;
+	bl_temp_elapsed_ms %= 500;
+	if (bl_battery_temperature(&temperature))
 		return;
 
-	bl_temp_elapsed_ms = 0;
-
-	ret = bl_read_battery_temp(&temp);
-
-	if (ret)
-		return;
-
-	WRITE_ONCE(bl_battery_temp, temp);
-
-	bl_update_temp_state(temp);
-}
-
-
-/*
- * --------------------------------------------------------------------------
- * Thermal-energy bucket
- * --------------------------------------------------------------------------
- *
- * This is effectively:
- *
- *   debt += estimated_power - sustainable_allowance
- *
- * integrated over time.
- *
- * The sustainable allowance is now temperature-dependent:
- *
- *      COOL  -> 650 mW
- *      WARM  -> 500 mW
- *      HOT   -> 350 mW
- *      VHOT  -> 250 mW
- *
- * Consequently, hotter chassis states:
- *
- *   - accumulate debt more quickly
- *   - recover debt more slowly
- *
- * which is exactly what we want from a preventative controller.
- */
-static void bl_update_bucket(unsigned int freq, unsigned long activity)
-{
-	unsigned int power_mw;
-	unsigned int sustainable_mw;
-
-	u64 input_uj;
-	u64 allowance_uj;
-	u64 delta;
-
-	input_uj = 0;
-
-	if (freq && activity) {
-		power_mw = bl_power_for_freq(freq);
-
-		input_uj = (u64)power_mw *
-			   activity *
-			   BL_INTERVAL_MS;
-
-		input_uj >>= SCHED_CAPACITY_SHIFT;
-	}
-
-	sustainable_mw = READ_ONCE(bl_sustainable_mw);
-
-	/*
-	 * mW * ms = uJ
-	 */
-	allowance_uj = (u64)sustainable_mw *
-		       BL_INTERVAL_MS;
-
-
-	if (input_uj > allowance_uj) {
-		delta = input_uj - allowance_uj;
-
-		if (delta >= BL_BUCKET_MAX_UJ - bl_heat_debt_uj)
-			bl_heat_debt_uj = BL_BUCKET_MAX_UJ;
-		else
-			bl_heat_debt_uj += delta;
-
+	state = bl_temp_state;
+	if (!bl_has_temperature) {
+		state = 0;
+		while (state < BL_TEMP_STATES - 1 &&
+		       temperature >= (int)bl_cfg.battery_thresholds[state])
+			state++;
+		bl_has_temperature = true;
 	} else {
-		delta = allowance_uj - input_uj;
+		while (state < BL_TEMP_STATES - 1 &&
+		       temperature >= (int)bl_cfg.battery_thresholds[state])
+			state++;
+		while (state > 0 &&
+		       temperature <= (int)bl_cfg.battery_thresholds[state - 1] -
+				      (int)bl_cfg.battery_hysteresis)
+			state--;
+	}
+	bl_temp_state = state;
+}
 
-		if (delta >= bl_heat_debt_uj)
-			bl_heat_debt_uj = 0;
-		else
-			bl_heat_debt_uj -= delta;
+static void bl_update_spike(unsigned int freq, unsigned long util,
+			    unsigned int dt_ms)
+{
+	unsigned long active = SCHED_CAPACITY_SCALE *
+				  bl_cfg.spike_active_pct / 100;
+	unsigned long quiet = SCHED_CAPACITY_SCALE *
+				 bl_cfg.spike_quiet_pct / 100;
+
+	if (bl_spike_armed && freq > bl_cfg.stages_khz[1] && util >= active) {
+		bl_spike_used_ms = min(bl_cfg.spike_ms, bl_spike_used_ms + dt_ms);
+		bl_quiet_ms = 0;
+		if (bl_spike_used_ms >= bl_cfg.spike_ms)
+			bl_spike_armed = false;
+	}
+
+	if (util <= quiet) {
+		bl_quiet_ms = min(bl_cfg.rearm_ms, bl_quiet_ms + dt_ms);
+		if (bl_quiet_ms >= bl_cfg.rearm_ms) {
+			bl_spike_armed = true;
+			bl_spike_used_ms = 0;
+		}
+	} else if (!bl_spike_armed ||
+		   !(freq > bl_cfg.stages_khz[1] && util >= active)) {
+		bl_quiet_ms = 0;
 	}
 }
-
-
-static unsigned int bl_bucket_pct(void)
-{
-	return (unsigned int)
-		div64_u64(bl_heat_debt_uj * 100ULL,
-			  BL_BUCKET_MAX_UJ);
-}
-
 
 /*
- * --------------------------------------------------------------------------
- * Thermal bucket state machine
- * --------------------------------------------------------------------------
- *
- * Internal thermal cap:
- *
- *      <15%    2314
- *       15%    2106
- *       30%    2002
- *       50%    1794
- *       70%    1586
- *
- * The temperature-dependent floor is applied afterwards.
+ * RC proxy: E' = (P_in - P_sustainable) - E / tau.
+ * P[mW] * dt[ms] is energy[uJ]. E is bounded above and below.
+ * The decay term represents stronger cooling as the thermal headroom
+ * has already been consumed. tau is NOT a measured die time constant.
  */
-static void bl_update_thermal_state(void)
+static void bl_update_energy(u32 freq, unsigned long total,
+			     unsigned long peak, u32 dt_ms)
 {
-	unsigned int pct;
-	enum bl_state new_state;
+	u32 input_mw = cl1_estimated_power_mw(freq, total, peak,
+						bl_cfg.shared_pct);
+	s64 delta_uj = ((s64)input_mw -
+			 (s64)bl_cfg.sustainable_mw[bl_temp_state]) * dt_ms;
+	u64 decay = div64_u64(bl_energy_uj * dt_ms,
+				 bl_cfg.thermal_tau_ms);
+	s64 next = (s64)bl_energy_uj + delta_uj - (s64)decay;
 
-	pct = bl_bucket_pct();
+	if (next < 0)
+		bl_energy_uj = 0;
+	else if ((u64)next > bl_cfg.bucket_capacity_uj)
+		bl_energy_uj = bl_cfg.bucket_capacity_uj;
+	else
+		bl_energy_uj = next;
+}
 
-	new_state = bl_state;
+static void bl_update_stage(void)
+{
+	unsigned int pct = div64_u64(bl_energy_uj * 100ULL,
+					    bl_cfg.bucket_capacity_uj);
 
-	switch (bl_state) {
-	case BL_STATE_MAX:
-		if (pct >= BL_ENTER_HIGH_PCT)
-			new_state = BL_STATE_HIGH;
+	while (bl_stage < BL_STAGES - 1 &&
+	       pct >= bl_cfg.enter_pct[bl_stage])
+		bl_stage++;
+	while (bl_stage > 0 && pct <= bl_cfg.exit_pct[bl_stage - 1])
+		bl_stage--;
+}
 
-		break;
+void boost_limiter_step(unsigned int freq, unsigned long total_util,
+			unsigned long peak_util, unsigned int elapsed_ms)
+{
+	unsigned int thermal_khz, spike_khz;
 
-
-	case BL_STATE_HIGH:
-		if (pct >= BL_ENTER_MED_PCT)
-			new_state = BL_STATE_MED;
-		else if (pct <= BL_EXIT_HIGH_PCT)
-			new_state = BL_STATE_MAX;
-
-		break;
-
-
-	case BL_STATE_MED:
-		if (pct >= BL_ENTER_LOW_PCT)
-			new_state = BL_STATE_LOW;
-		else if (pct <= BL_EXIT_MED_PCT)
-			new_state = BL_STATE_HIGH;
-
-		break;
-
-
-	case BL_STATE_LOW:
-		if (pct >= BL_ENTER_DEEP_PCT)
-			new_state = BL_STATE_DEEP;
-		else if (pct <= BL_EXIT_LOW_PCT)
-			new_state = BL_STATE_MED;
-
-		break;
-
-
-	case BL_STATE_DEEP:
-		if (pct <= BL_EXIT_DEEP_PCT)
-			new_state = BL_STATE_LOW;
-
-		break;
-
-
-	default:
-		new_state = BL_STATE_MAX;
-
-		break;
-	}
-
-
-	if (new_state == bl_state)
+	/* Sampling staleness protection, even if an outside caller is added. */
+	elapsed_ms = min(elapsed_ms, 100U);
+	if (!elapsed_ms)
 		return;
 
+	bl_update_temperature(elapsed_ms);
+	bl_update_spike(freq, total_util, elapsed_ms);
+	bl_update_energy(freq, total_util, peak_util, elapsed_ms);
+	bl_update_stage();
 
-	bl_state = new_state;
-
-
-	switch (bl_state) {
-	case BL_STATE_HIGH:
-		WRITE_ONCE(bl_thermal_limit_khz,
-			   BL_FREQ_HIGH);
-		break;
-
-
-	case BL_STATE_MED:
-		WRITE_ONCE(bl_thermal_limit_khz,
-			   BL_FREQ_MED);
-		break;
-
-
-	case BL_STATE_LOW:
-		WRITE_ONCE(bl_thermal_limit_khz,
-			   BL_FREQ_LOW);
-		break;
-
-
-	case BL_STATE_DEEP:
-		WRITE_ONCE(bl_thermal_limit_khz,
-			   BL_FREQ_DEEP);
-		break;
-
-
-	case BL_STATE_MAX:
-	default:
-		WRITE_ONCE(bl_thermal_limit_khz,
-			   BL_FREQ_MAX);
-		break;
-	}
+	/* Independent limits: fast thermal debt AND slow battery/chassis proxy.
+	 * A hot battery must never relax a cap imposed by accumulated heat. */
+	thermal_khz = min(bl_cfg.stages_khz[bl_stage],
+			  bl_cfg.temp_ceiling_khz[bl_temp_state]);
+	spike_khz = bl_spike_armed ? bl_cfg.stages_khz[0] :
+					 bl_cfg.stages_khz[1];
+	WRITE_ONCE(bl_cap_khz, min(spike_khz, thermal_khz));
 }
 
-
-/*
- * Temperature floor limits how deeply the energy bucket is allowed to
- * throttle.
- *
- * Example:
- *
- *      bucket cap = 1586
- *      battery    = 28 C
- *      temp floor = 1924
- *
- *      effective thermal cap = 1924
- */
-static unsigned int bl_get_effective_thermal_limit(void)
-{
-	unsigned int thermal;
-	unsigned int floor;
-
-	thermal = READ_ONCE(bl_thermal_limit_khz);
-	floor = READ_ONCE(bl_temp_floor_khz);
-
-	return max(thermal, floor);
-}
-
-
-/*
- * Public cap suggestion consumed by power_envelope.c.
- *
- * Both independent restrictions must be obeyed:
- *
- *      transient 2314 token
- *      energy/temperature control
- *
- * Whichever is stricter wins.
- */
 unsigned int boost_limiter_get_limit(void)
 {
-	unsigned int spike;
-	unsigned int thermal;
-
-	spike = READ_ONCE(bl_spike_limit_khz);
-
-	thermal = bl_get_effective_thermal_limit();
-
-	return min(spike, thermal);
+	return READ_ONCE(bl_cap_khz);
 }
-
-
-static void bl_workfn(struct work_struct *work)
-{
-	unsigned int freq;
-	unsigned long activity;
-
-	/*
-	 * CL1 shares one cpufreq policy, therefore CPU4 is sufficient to
-	 * obtain the cluster's current frequency.
-	 */
-	freq = cpufreq_quick_get(BL_FIRST_CPU);
-
-	activity = bl_cluster_activity();
-
-
-	/*
-	 * Update temperature first.
-	 *
-	 * If this 500 ms sample crosses a temperature boundary, the new
-	 * sustainable-power allowance is therefore used immediately by this
-	 * same bucket sample.
-	 */
-	bl_update_temperature();
-
-
-	/*
-	 * Fast transient-boost control.
-	 */
-	bl_update_spike(freq, activity);
-
-
-	/*
-	 * Medium-timescale energy control.
-	 */
-	bl_update_bucket(freq, activity);
-
-	bl_update_thermal_state();
-
-
-	schedule_delayed_work(&bl_work,
-			      msecs_to_jiffies(BL_INTERVAL_MS));
-}
-
 
 static int __init boost_limiter_init(void)
 {
-	/*
-	 * Energy bucket.
-	 */
-	bl_heat_debt_uj = 0;
-
-	bl_state = BL_STATE_MAX;
-
-	WRITE_ONCE(bl_thermal_limit_khz,
-		   BL_FREQ_MAX);
-
-
-	/*
-	 * 2314 MHz boost token.
-	 */
-	bl_spike_used_ms = 0;
-
-	bl_spike_quiet_ms = 0;
-
-	bl_spike_armed = true;
-
-	WRITE_ONCE(bl_spike_limit_khz,
-		   BL_FREQ_MAX);
-
-
-	/*
-	 * Battery/chassis policy.
-	 *
-	 * Until a valid reading arrives, start in WARM mode:
-	 *
-	 *      floor       = 1794 MHz
-	 *      sustainable = 500 mW
-	 *
-	 * This avoids assuming maximum thermal headroom during early boot.
-	 */
-	bl_battery_psy = NULL;
-
-	bl_temp_valid = false;
-
-	bl_battery_temp = 0;
-
-	bl_temp_state = BL_TEMP_WARM;
-
-	WRITE_ONCE(bl_temp_floor_khz,
-		   BL_TEMP_FLOOR_WARM);
-
-	WRITE_ONCE(bl_sustainable_mw,
-		   BL_SUSTAINABLE_WARM_MW);
-
-
-	/*
-	 * Force a battery query on the first worker invocation.
-	 */
-	bl_temp_elapsed_ms = BL_TEMP_UPDATE_MS;
-
-
-	INIT_DELAYED_WORK(&bl_work,
-			  bl_workfn);
-
-
-	pr_info("EMS boost limiter: spike=%ums rearm=%ums bucket=%llu uJ temp-aware floor/power enabled\n",
-		BL_SPIKE_BUDGET_MS,
-		BL_SPIKE_REARM_MS,
-		BL_BUCKET_MAX_UJ);
-
-
-	schedule_delayed_work(&bl_work,
-			      msecs_to_jiffies(BL_INTERVAL_MS));
-
+	bl_read_dts();
+	bl_cap_khz = bl_cfg.stages_khz[0];
+	pr_info("CL1 boost v2: token=%ums tau=%ums capacity=%u uJ shared=%u%%\n",
+		bl_cfg.spike_ms, bl_cfg.thermal_tau_ms,
+		bl_cfg.bucket_capacity_uj, bl_cfg.shared_pct);
 	return 0;
 }
-
 late_initcall(boost_limiter_init);

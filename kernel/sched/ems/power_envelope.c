@@ -1,208 +1,207 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * Exynos 9810 CL1 Power Envelope
- *
- * Electrical/core-count envelope for the M3 cluster.
- *
- * This file is the sole owner of the CL1 max-frequency PM-QoS request.
- * It combines:
- *
- *   1. Instantaneous core-count power envelope
- *   2. Long-term boost/thermal limiter suggestion
- *
- * effective_limit = min(power_envelope, boost_limiter)
- *
- * The envelope itself deliberately contains no thermal history.
- * Time/energy residency is handled by boost_limiter.c.
- */
-
+/* Exynos 9810 M3 instantaneous envelope + one shared PM-QoS owner. */
 #include <linux/cpu.h>
+#include <linux/cpufreq.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
+#include <linux/math64.h>
+#include <linux/of.h>
 #include <linux/pm_qos.h>
 #include <linux/sched.h>
 #include <linux/workqueue.h>
 
 #include "ems.h"
+#include "cl1_power_model.h"
 
-/*
- * CL1 = Exynos M3 CPUs 4-7.
- */
-#define PE_FIRST_CPU			4
-#define PE_LAST_CPU			7
-#define PE_CPU_COUNT			(PE_LAST_CPU - PE_FIRST_CPU + 1)
+#define PE_FIRST_CPU          4
+#define PE_LAST_CPU           7
+#define PE_CPUS               4
+#define PE_INTERVAL_MS        10
+#define PE_MAX_ELAPSED_MS     100
+#define PE_DT_COMPAT          "samsung,exynos9810-cl1-envelope"
 
-/*
- * Poll quickly enough to react to additional M3 activity without putting
- * work directly in the scheduler hot path.
- */
-#define PE_INTERVAL_MS			10
+struct pe_config {
+	u32 busy_enter_pct;
+	u32 busy_exit_pct;
+	u32 single_khz;
+	u32 dual_khz;
+	u32 multi_khz;
+	u32 power_budget_mw;
+	u32 shared_pct;
+};
 
-/*
- * Busy-core detection.
- *
- * 25% was the original threshold. Add a lower exit threshold so a CPU
- * hovering around 25% does not repeatedly enter/leave the busy set.
- */
-#define PE_BUSY_ENTER_PCT		25
-#define PE_BUSY_EXIT_PCT		15
-
-/*
- * Conservative electrical envelope.
- *
- * These are deliberately below the frequencies where the 9810 has shown
- * undesirable OCP behaviour with several M3 cores active.
- */
-#define PE_FREQ_SINGLE			2314000
-#define PE_FREQ_DUAL			2002000
-#define PE_FREQ_MULTI			1794000
-
-/*
- * boost_limiter.c publishes a cap suggestion only.
- * Power Envelope owns the actual PM-QoS request.
- */
-extern unsigned int boost_limiter_get_limit(void);
+/* The 3 frequency ceilings remain the experimentally conservative OCP guard. */
+static struct pe_config pe_cfg = {
+	.busy_enter_pct = 25,
+	.busy_exit_pct = 15,
+	.single_khz = 2314000,
+	.dual_khz = 2002000,
+	.multi_khz = 1794000,
+	.power_budget_mw = 0, /* No measured multicore OCP power threshold yet. */
+	.shared_pct = 20,
+};
 
 static struct pm_qos_request pe_max_qos_req;
 static struct delayed_work pe_work;
+static bool pe_busy[PE_CPUS];
+static u32 pe_limit_khz = 2314000;
+static u64 pe_last_ns;
 
-static bool pe_busy_state[PE_CPU_COUNT];
-static unsigned int pe_applied_limit = PE_FREQ_SINGLE;
-
-/*
- * Return CPU activity normalized to 0..1024.
- *
- * EMS tracks USS and SSE independently. Using each utilization ratio and
- * combining them gives us a better approximation of actual CPU occupancy
- * than using only one scheduler class.
- */
-static unsigned long pe_cpu_activity(int cpu)
+static void __init pe_read_dts(void)
 {
-	unsigned long uss;
-	unsigned long sse;
-	unsigned long activity;
+	struct device_node *np;
+	u32 value;
+
+	np = of_find_compatible_node(NULL, NULL, PE_DT_COMPAT);
+	if (!np)
+		return;
+
+	if (!of_property_read_u32(np, "samsung,busy-enter-pct", &value) &&
+	    value >= 1 && value <= 100)
+		pe_cfg.busy_enter_pct = value;
+	if (!of_property_read_u32(np, "samsung,busy-exit-pct", &value) &&
+	    value < 100)
+		pe_cfg.busy_exit_pct = value;
+	if (pe_cfg.busy_exit_pct >= pe_cfg.busy_enter_pct) {
+		pe_cfg.busy_enter_pct = 25;
+		pe_cfg.busy_exit_pct = 15;
+	}
+
+	if (!of_property_read_u32(np, "samsung,single-max-khz", &value) &&
+	    value >= 598000 && value <= 2314000)
+		pe_cfg.single_khz = value;
+	if (!of_property_read_u32(np, "samsung,dual-max-khz", &value) &&
+	    value >= 598000 && value <= 2002000)
+		pe_cfg.dual_khz = value;
+	if (!of_property_read_u32(np, "samsung,multi-max-khz", &value) &&
+	    value >= 598000 && value <= 1794000)
+		pe_cfg.multi_khz = value;
+	/* A bad ordering must never allow an unexpectedly permissive setting. */
+	if (pe_cfg.dual_khz > pe_cfg.single_khz)
+		pe_cfg.dual_khz = pe_cfg.single_khz;
+	if (pe_cfg.multi_khz > pe_cfg.dual_khz)
+		pe_cfg.multi_khz = pe_cfg.dual_khz;
+
+	if (!of_property_read_u32(np, "samsung,electrical-budget-mw", &value) &&
+	    value <= 10000)
+		pe_cfg.power_budget_mw = value;
+	if (!of_property_read_u32(np, "samsung,shared-power-pct", &value) &&
+	    value <= 100)
+		pe_cfg.shared_pct = value;
+
+	of_node_put(np);
+}
+
+static unsigned long pe_cpu_util(int cpu)
+{
+	unsigned long sum;
 
 	if (!cpu_online(cpu))
 		return 0;
 
-	uss = ml_cpu_util_ratio(cpu, 0);
-	sse = ml_cpu_util_ratio(cpu, 1);
-
-	activity = uss + sse;
-
-	return min_t(unsigned long, activity, SCHED_CAPACITY_SCALE);
+	/* USS + SSE is the convention used by this EMS port; verify their scale. */
+	sum = ml_cpu_util_ratio(cpu, 0) + ml_cpu_util_ratio(cpu, 1);
+	return min_t(unsigned long, sum, SCHED_CAPACITY_SCALE);
 }
 
-static bool pe_cpu_is_busy(int cpu)
+static unsigned int pe_envelope(unsigned long *total_util,
+				unsigned long *peak_util)
 {
-	unsigned long activity;
-	unsigned long enter;
-	unsigned long exit;
-	int idx;
-
-	idx = cpu - PE_FIRST_CPU;
-
-	if (!cpu_online(cpu)) {
-		pe_busy_state[idx] = false;
-		return false;
-	}
-
-	activity = pe_cpu_activity(cpu);
-
-	enter = SCHED_CAPACITY_SCALE * PE_BUSY_ENTER_PCT / 100;
-	exit = SCHED_CAPACITY_SCALE * PE_BUSY_EXIT_PCT / 100;
-
-	if (pe_busy_state[idx]) {
-		if (activity <= exit)
-			pe_busy_state[idx] = false;
-	} else {
-		if (activity >= enter)
-			pe_busy_state[idx] = true;
-	}
-
-	return pe_busy_state[idx];
-}
-
-static unsigned int pe_get_envelope_limit(void)
-{
+	unsigned int busy_count = 0;
+	unsigned long enter = SCHED_CAPACITY_SCALE * pe_cfg.busy_enter_pct / 100;
+	unsigned long exit = SCHED_CAPACITY_SCALE * pe_cfg.busy_exit_pct / 100;
 	int cpu;
-	int busy = 0;
 
+	*total_util = 0;
+	*peak_util = 0;
 	for (cpu = PE_FIRST_CPU; cpu <= PE_LAST_CPU; cpu++) {
-		if (pe_cpu_is_busy(cpu))
-			busy++;
+		unsigned long util = pe_cpu_util(cpu);
+		int idx = cpu - PE_FIRST_CPU;
+
+		*total_util += util;
+		*peak_util = max(*peak_util, util);
+		if (!cpu_online(cpu))
+			pe_busy[idx] = false;
+		else if (pe_busy[idx]) {
+			if (util <= exit)
+				pe_busy[idx] = false;
+		} else if (util >= enter) {
+			pe_busy[idx] = true;
+		}
+		busy_count += pe_busy[idx];
 	}
 
-	if (busy >= 3)
-		return PE_FREQ_MULTI;
-
-	if (busy == 2)
-		return PE_FREQ_DUAL;
-
-	/*
-	 * Zero or one busy M3:
-	 *
-	 * Keep the cluster capped to the known-safe single-core ceiling.
-	 * We intentionally do not expose 2496+ MHz here.
-	 */
-	return PE_FREQ_SINGLE;
+	if (busy_count >= 3)
+		return pe_cfg.multi_khz;
+	if (busy_count == 2)
+		return pe_cfg.dual_khz;
+	return pe_cfg.single_khz;
 }
 
-static void pe_update_limit(void)
+/* Optional model-based cap. Actual OCP protection is the count-based cap. */
+static unsigned int pe_budget_limit(unsigned int max_khz,
+				     unsigned long total_util,
+				     unsigned long peak_util)
 {
-	unsigned int envelope_limit;
-	unsigned int boost_limit;
-	unsigned int effective_limit;
+	int i;
 
-	envelope_limit = pe_get_envelope_limit();
-	boost_limit = boost_limiter_get_limit();
+	if (!pe_cfg.power_budget_mw || !total_util)
+		return max_khz;
 
-	/*
-	 * Electrical safety and accumulated thermal budget are independent
-	 * constraints. The stricter one wins.
-	 */
-	effective_limit = min(envelope_limit, boost_limit);
+	for (i = (int)CL1_POWER_POINTS - 1; i >= 0; i--) {
+		u32 freq = cl1_power_table[i].freq_khz;
 
-	if (effective_limit == READ_ONCE(pe_applied_limit))
-		return;
+		if (freq > max_khz)
+			continue;
+		if (cl1_estimated_power_mw(freq, total_util, peak_util,
+					       pe_cfg.shared_pct) <=
+		    pe_cfg.power_budget_mw)
+			return freq;
+	}
 
-	pm_qos_update_request(&pe_max_qos_req, effective_limit);
-	WRITE_ONCE(pe_applied_limit, effective_limit);
+	return cl1_power_table[0].freq_khz;
 }
 
 static void pe_workfn(struct work_struct *work)
 {
-	pe_update_limit();
+	u64 now_ns = ktime_get_ns();
+	u64 elapsed_ns = now_ns - pe_last_ns;
+	unsigned int dt_ms, freq, cap;
+	unsigned long sum_util, peak_util;
 
-	schedule_delayed_work(&pe_work,
-			      msecs_to_jiffies(PE_INTERVAL_MS));
+	pe_last_ns = now_ns;
+	/* Prevent a delayed worker from attributing seconds to a stale util sample. */
+	dt_ms = min_t(u64, div_u64(elapsed_ns, 1000000), PE_MAX_ELAPSED_MS);
+	if (!dt_ms)
+		dt_ms = 1;
+
+	cap = pe_envelope(&sum_util, &peak_util);
+	freq = cpufreq_quick_get(PE_FIRST_CPU);
+	boost_limiter_step(freq, sum_util, peak_util, dt_ms);
+	cap = min(cap, boost_limiter_get_limit());
+	cap = pe_budget_limit(cap, sum_util, peak_util);
+
+	if (cap != pe_limit_khz) {
+		pm_qos_update_request(&pe_max_qos_req, cap);
+		pe_limit_khz = cap;
+	}
+
+	schedule_delayed_work(&pe_work, msecs_to_jiffies(PE_INTERVAL_MS));
 }
 
 static int __init power_envelope_init(void)
 {
-	int i;
-
-	for (i = 0; i < PE_CPU_COUNT; i++)
-		pe_busy_state[i] = false;
-
+	pe_read_dts();
+	pe_limit_khz = pe_cfg.single_khz;
+	pm_qos_add_request(&pe_max_qos_req, PM_QOS_CLUSTER1_FREQ_MAX,
+			   pe_limit_khz);
+	pe_last_ns = ktime_get_ns();
 	INIT_DELAYED_WORK(&pe_work, pe_workfn);
-
-	/*
-	 * Start safe immediately. boost_limiter_get_limit() also defaults
-	 * to PE_FREQ_SINGLE / 2314 MHz before its worker starts.
-	 */
-	pm_qos_add_request(&pe_max_qos_req,
-			   PM_QOS_CLUSTER1_FREQ_MAX,
-			   PE_FREQ_SINGLE);
-
-	WRITE_ONCE(pe_applied_limit, PE_FREQ_SINGLE);
-
-	pr_info("EMS power envelope: single=%u dual=%u multi=%u kHz\n",
-		PE_FREQ_SINGLE, PE_FREQ_DUAL, PE_FREQ_MULTI);
-
-	schedule_delayed_work(&pe_work,
-			      msecs_to_jiffies(PE_INTERVAL_MS));
-
+	schedule_delayed_work(&pe_work, msecs_to_jiffies(PE_INTERVAL_MS));
+	pr_info("CL1 envelope v2: single=%u dual=%u multi=%u kHz budget=%u mW\n",
+		pe_cfg.single_khz, pe_cfg.dual_khz, pe_cfg.multi_khz,
+		pe_cfg.power_budget_mw);
 	return 0;
 }
 late_initcall(power_envelope_init);
