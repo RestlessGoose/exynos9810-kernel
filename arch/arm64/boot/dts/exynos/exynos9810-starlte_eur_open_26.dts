@@ -5273,6 +5273,35 @@
 		};
 	};
 
+	cl1_envelope: exynos9810-cl1-envelope {
+		compatible = "samsung,exynos9810-cl1-envelope";
+
+		samsung,single-max-khz = <2314000>;
+		samsung,dual-max-khz = <1924000>;
+		samsung,multi-max-khz = <1794000>;
+		samsung,busy-enter-pct = <25>;
+		samsung,busy-exit-pct = <15>;
+
+		samsung,electrical-budget-mw = <0>;
+		samsung,shared-power-pct = <20>;
+
+		samsung,spike-budget-ms = <25>;
+		samsung,spike-rearm-ms = <350>;
+		samsung,spike-active-pct = <20>;
+		samsung,spike-quiet-pct = <8>;
+
+		samsung,thermal-capacity-uj = <3500000>;
+		samsung,thermal-tau-ms = <6500>;
+		samsung,thermal-stages-khz = <2314000 2002000 1924000 1690000 1586000>;
+		samsung,thermal-enter-pct = <15 30 50 70>;
+		samsung,thermal-exit-pct = <8 20 40 60>;
+
+		samsung,battery-thresholds-deci-c = <290 330 360>;
+		samsung,battery-temp-hysteresis = <10>;
+		samsung,sustainable-power-mw = <480 360 260 180>;
+		samsung,battery-ceiling-khz = <2106000 2002000 1794000 1586000>;
+	};
+
 	exynos-pm {
 		compatible = "samsung,exynos-pm";
 		reg = <0x0 0x14050000 0x1000 0x0 0x10101200 0x100>;
