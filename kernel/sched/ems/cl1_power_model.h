@@ -83,9 +83,4 @@ static inline u32 cl1_estimated_power_mw(u32 freq_khz,
 			  100ULL * SCHED_CAPACITY_SCALE);
 }
 
-/* One update owner: power_envelope.c samples scheduler and frequency. */
-void boost_limiter_step(unsigned int freq_khz, unsigned long total_util,
-			unsigned long peak_util, unsigned int elapsed_ms);
-unsigned int boost_limiter_get_limit(void);
-
 #endif /* _EMS_CL1_POWER_MODEL_H */

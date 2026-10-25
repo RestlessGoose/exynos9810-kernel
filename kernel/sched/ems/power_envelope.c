@@ -4,7 +4,6 @@
 #include <linux/cpufreq.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/ktime.h>
 #include <linux/math64.h>
 #include <linux/of.h>
 #include <linux/pm_qos.h>
@@ -18,7 +17,6 @@
 #define PE_LAST_CPU           7
 #define PE_CPUS               4
 #define PE_INTERVAL_MS        10
-#define PE_MAX_ELAPSED_MS     100
 #define PE_DT_COMPAT          "samsung,exynos9810-cl1-envelope"
 
 struct pe_config {
@@ -46,7 +44,6 @@ static struct pm_qos_request pe_max_qos_req;
 static struct delayed_work pe_work;
 static bool pe_busy[PE_CPUS];
 static u32 pe_limit_khz = 2314000;
-static u64 pe_last_ns;
 
 static void __init pe_read_dts(void)
 {
@@ -165,21 +162,11 @@ static unsigned int pe_budget_limit(unsigned int max_khz,
 
 static void pe_workfn(struct work_struct *work)
 {
-	u64 now_ns = ktime_get_ns();
-	u64 elapsed_ns = now_ns - pe_last_ns;
-	unsigned int dt_ms, freq, cap;
+	unsigned int cap;
 	unsigned long sum_util, peak_util;
 
-	pe_last_ns = now_ns;
-	/* Prevent a delayed worker from attributing seconds to a stale util sample. */
-	dt_ms = min_t(u64, div_u64(elapsed_ns, 1000000), PE_MAX_ELAPSED_MS);
-	if (!dt_ms)
-		dt_ms = 1;
-
+	/* Hard multicore caps only. Pragmatic now owns thermal and turbo debt. */
 	cap = pe_envelope(&sum_util, &peak_util);
-	freq = cpufreq_quick_get(PE_FIRST_CPU);
-	boost_limiter_step(freq, sum_util, peak_util, dt_ms);
-	cap = min(cap, boost_limiter_get_limit());
 	cap = pe_budget_limit(cap, sum_util, peak_util);
 
 	if (cap != pe_limit_khz) {
@@ -196,7 +183,6 @@ static int __init power_envelope_init(void)
 	pe_limit_khz = pe_cfg.single_khz;
 	pm_qos_add_request(&pe_max_qos_req, PM_QOS_CLUSTER1_FREQ_MAX,
 			   pe_limit_khz);
-	pe_last_ns = ktime_get_ns();
 	INIT_DELAYED_WORK(&pe_work, pe_workfn);
 	schedule_delayed_work(&pe_work, msecs_to_jiffies(PE_INTERVAL_MS));
 	pr_info("CL1 envelope v2: single=%u dual=%u multi=%u kHz budget=%u mW\n",

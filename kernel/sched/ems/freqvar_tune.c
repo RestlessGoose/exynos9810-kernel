@@ -8,6 +8,7 @@
 #include <linux/cpufreq.h>
 #include <linux/slab.h>
 #include <linux/of.h>
+#include <linux/string.h>
 #include <trace/events/ems.h>
 
 #include "../sched.h"
@@ -211,6 +212,16 @@ static ssize_t freqvar_##name##_store(struct gov_attr_set *attr_set,		\
 int sugov_sysfs_add_attr(struct cpufreq_policy *policy, const struct attribute *attr);
 struct cpufreq_policy *sugov_get_attr_policy(struct gov_attr_set *attr_set);
 
+/* Do not cast another governor's governor_data to struct sugov_policy. */
+static bool freqvar_is_governor(struct cpufreq_policy *policy, const char *name)
+{
+	return policy->governor && !strcmp(policy->governor->name, name);
+}
+
+void pragmatic_update_rate_limit_us(struct cpufreq_policy *policy,
+				    int up_us, int down_us);
+
+
 /**********************************************************************
  * freqvar boost                                                      *
  **********************************************************************/
@@ -305,15 +316,19 @@ static int freqvar_boost_init(struct device_node *dn, const struct cpumask *mask
 	if (ret)
 		goto fail_init;
 
+	/* Legacy governor sysfs attributes belong only to schedutil's kobject.
+	 * Pragmatic still receives frequency-dependent boost via the exported
+	 * freqvar_boost_vector() path, without interpreting its private objects.
+	 */
+	if (freqvar_is_governor(policy, "schedutil")) {
+		ret = sugov_sysfs_add_attr(policy, &freqvar_boost_attr.attr);
+		if (ret)
+			goto fail_init;
+	}
 	for_each_cpu(cpu, mask)
 		per_cpu(freqvar_boost, cpu) = boost;
-
 	freqvar_boost_update(policy->cpu, policy->cur);
-
-	ret = sugov_sysfs_add_attr(policy, &freqvar_boost_attr.attr);
-	if (ret)
-		goto fail_init;
-
+	cpufreq_cpu_put(policy);
 	return 0;
 
 fail_init:
@@ -360,7 +375,14 @@ static void freqvar_rate_limit_update(int cpu, int new_freq)
 	if (!policy)
 		return;
 
-	sugov_update_rate_limit_us(policy, up_rate_limit, down_rate_limit);
+	if (up_rate_limit >= 0 && down_rate_limit >= 0) {
+		if (freqvar_is_governor(policy, "schedutil"))
+			sugov_update_rate_limit_us(policy, up_rate_limit,
+						    down_rate_limit);
+		else if (freqvar_is_governor(policy, "pragmatic"))
+			pragmatic_update_rate_limit_us(policy, up_rate_limit,
+							 down_rate_limit);
+	}
 
 	cpufreq_cpu_put(policy);
 }
@@ -370,6 +392,7 @@ static void freqvar_rate_limit_free(struct freqvar_rate_limit *rate_limit)
 	if (rate_limit) {
 		freqvar_free(rate_limit->up_table);
 		freqvar_free(rate_limit->down_table);
+		freqvar_free(rate_limit->st_table);
 	}
 
 	freqvar_free(rate_limit);
@@ -451,24 +474,23 @@ static int freqvar_rate_limit_init(struct device_node *dn, const struct cpumask 
 	if (ret)
 		goto fail_init;
 
-	ret = sugov_sysfs_add_attr(policy, &freqvar_up_rate_limit.attr);
-	if (ret)
-		goto fail_init;
-
-	ret = sugov_sysfs_add_attr(policy, &freqvar_down_rate_limit.attr);
-	if (ret)
-		goto fail_init;
-
-	ret = sugov_sysfs_add_attr(policy, &freqvar_st_boost.attr);
-	if (ret)
-		goto fail_init;
-
+	if (freqvar_is_governor(policy, "schedutil")) {
+		ret = sugov_sysfs_add_attr(policy, &freqvar_up_rate_limit.attr);
+		if (ret)
+			goto fail_init;
+		ret = sugov_sysfs_add_attr(policy, &freqvar_down_rate_limit.attr);
+		if (ret)
+			goto fail_init;
+		ret = sugov_sysfs_add_attr(policy, &freqvar_st_boost.attr);
+		if (ret)
+			goto fail_init;
+	}
 	for_each_cpu(cpu, mask)
 		per_cpu(freqvar_rate_limit, cpu) = rate_limit;
-
 	freqvar_rate_limit_update(policy->cpu, policy->cur);
-
+	cpufreq_cpu_put(policy);
 	return 0;
+
 
 fail_init:
 	freqvar_rate_limit_free(rate_limit);
