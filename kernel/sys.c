@@ -1359,19 +1359,20 @@ SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
         up_read(&uts_sem);
 
         if (uid == 0) {
-                spoof = !strcmp(current->comm, "bpfloader") ||
-                        !strcmp(current->comm, "netd");
-        } else if (uid == 1000) {
-                spoof = !strcmp(current->comm, "netbpfload");
-        }
+			spoof = !strcmp(current->comm, "bpfloader") ||
+					!strcmp(current->comm, "netbpfload") ||
+					!strcmp(current->comm, "netd");
+		} else if (uid == 1000) {
+			spoof = !strcmp(current->comm, "netbpfload");
+		}
 
         if (spoof) {
-                strlcpy(tmp.release, "5.4.186",
-                        sizeof(tmp.release));
+			strlcpy(tmp.release, "5.4.186",
+					sizeof(tmp.release));
 
-                pr_info("fake uname: %s/%d uid=%u release=%s\n",
-                        current->comm, current->pid,
-                        uid, tmp.release);
+			pr_info("fake uname: %s/%d uid=%u release=%s\n",
+					current->comm, current->pid,
+					uid, tmp.release);
         }
 
         if (copy_to_user(name, &tmp, sizeof(tmp)))
