@@ -446,13 +446,13 @@ BUILD()
 {
 
 	if [ "$CR_SPOOF4BPF" = "1" ]; then
-		echo " Spoofing kernel version to 5.4.186 for BPF"
-		sed -i 's/strcpy(tmp.release, \"4.9.337\");/strcpy(tmp.release, \"5.4.186\");/g' kernel/sys.c
+		echo " Enabling kernel version spoof to 5.4.186 for BPF"
+		sed -i 's/strlcpy(tmp.release, "4.9.337",/strlcpy(tmp.release, "5.4.186",/g' kernel/sys.c
 	fi
 
 	if [ "$CR_SPOOF4BPF" = "2" ]; then
-		echo " Reversing kernel version spoof to 4.9.337 for BPF"
-		sed -i 's/strcpy(tmp.release, \"5.4.186\");/strcpy(tmp.release, \"4.9.337\");/g' kernel/sys.c
+		echo " Disabling kernel version spoof for BPF"
+		sed -i 's/strlcpy(tmp.release, "5.4.186",/strlcpy(tmp.release, "4.9.337",/g' kernel/sys.c
 	fi
 
 	if [ "$CR_TARGET" = "1" ]; then

@@ -1350,32 +1350,40 @@ static int override_release(char __user *release, size_t len)
 
 SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 {
-	struct new_utsname tmp;
+        struct new_utsname tmp;
+        uid_t uid = __kuid_val(current_uid());
+        bool spoof = false;
 
-	down_read(&uts_sem);
-	memcpy(&tmp, utsname(), sizeof(tmp));
+        down_read(&uts_sem);
+        memcpy(&tmp, utsname(), sizeof(tmp));
+        up_read(&uts_sem);
 
-	if (current_uid().val != 0)
-		goto nospoof;
+        if (uid == 0) {
+                spoof = !strcmp(current->comm, "bpfloader") ||
+                        !strcmp(current->comm, "netd");
+        } else if (uid == 1000) {
+                spoof = !strcmp(current->comm, "netbpfload");
+        }
 
-	if (!strncmp(current->comm, "bpfloader", 9) ||
-	    !strncmp(current->comm, "netbpfload", 10) ||
-	    !strncmp(current->comm, "netd", 4)) {
-		strcpy(tmp.release, "5.4.186");
-		pr_info("fake uname: %s/%d release=%s\n",
-			 current->comm, current->pid, tmp.release);
-	}
+        if (spoof) {
+                strlcpy(tmp.release, "5.4.186",
+                        sizeof(tmp.release));
 
-nospoof:
-	up_read(&uts_sem);
-	if (copy_to_user(name, &tmp, sizeof(tmp)))
-		return -EFAULT;
+                pr_info("fake uname: %s/%d uid=%u release=%s\n",
+                        current->comm, current->pid,
+                        uid, tmp.release);
+        }
 
-	if (override_release(name->release, sizeof(name->release)))
-		return -EFAULT;
-	if (override_architecture(name))
-		return -EFAULT;
-	return 0;
+        if (copy_to_user(name, &tmp, sizeof(tmp)))
+                return -EFAULT;
+
+        if (override_release(name->release, sizeof(name->release)))
+                return -EFAULT;
+
+        if (override_architecture(name))
+                return -EFAULT;
+
+        return 0;
 }
 
 #ifdef __ARCH_WANT_SYS_OLD_UNAME
