@@ -14,7 +14,6 @@
 
 #if defined(CONFIG_ICE)
 #include "../icedata/icedata.h"
-#include "../icedata/icestatics.h"
 #endif
 
 #define FVMAP_SIZE		(SZ_8K)
@@ -544,6 +543,11 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 	unsigned int paddr_offset, fvaddr_offset;
 	int size, margin;
 	int i, j;
+	bool is_mif;
+#if defined(CONFIG_ICE)
+	enum ice_domain ice_domain;
+	unsigned int ice_reduction_uv;
+#endif
 
 	fvmap_header = map_base;
 	header = sram_base;
@@ -587,13 +591,14 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 		if (margin)
 			cal_dfs_set_volt_margin(i | ACPM_VCLK_TYPE, margin);
 
-		// ICE: Apply offset table
-		#if defined(CONFIG_ICE)
-		pr_info("[ICE] Applying undervolt offset tables...\n");
-		#endif
+		is_mif = !strcmp(vclk->name, "dvfs_mif");
+#if defined(CONFIG_ICE)
+		ice_domain = ice_domain_from_name(vclk->name);
+#endif
 
 		for (j = 0; j < fvmap_header[i].num_of_lv; j++) {
-			if (strcmp(vclk->name, "dvfs_mif") == 0) {
+			/* Preserve the existing MIF top-frequency overrides. */
+			if (is_mif) {
 				if (old->table[j].rate == 2002000)
 					old->table[j].volt = 768750;
 				if (old->table[j].rate == 2093000)
@@ -601,34 +606,26 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 				if (old->table[j].rate == 2094000)
 					old->table[j].volt = 800000;
 			}
-			#if defined(CONFIG_ICE)
-			if (strcmp(vclk->name, "dvfs_cpucl0") == 0) {
-				if (old->table[j].rate == ice_cl0_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_cl0[(j * 16) + ice_asv_scores_cl0] * ice_uv_step);
-			} else if (strcmp(vclk->name, "dvfs_cpucl1") == 0) {
-				if (old->table[j].rate == ice_cl1_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_cl1[(j * 16) + ice_asv_scores_cl1] * ice_uv_step);
-			} else if (strcmp(vclk->name, "dvfs_g3d") == 0) {
-				if (old->table[j].rate == ice_g3d_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_g3d[(j * 16) + ice_asv_scores_g3d] * ice_uv_step);
-			} else if (strcmp(vclk->name, "dvfs_mif") == 0) {
-				if (old->table[j].rate == ice_mif_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_mif[(j * 16) + ice_asv_scores_mif] * ice_uv_step);
-			} else if (strcmp(vclk->name, "dvfs_cp") == 0) {
-				if (old->table[j].rate == ice_cp_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_cp[(j * 16) + ice_asv_scores_cp] * ice_uv_step);
-			} else if (strcmp(vclk->name, "dvfs_disp") == 0) {
-				if (old->table[j].rate == ice_disp_freqs[j])
-					old->table[j].volt = old->table[j].volt - (ice_disp[(j * 16) + ice_asv_scores_disp] * ice_uv_step);
-			}
-			#endif
 
+#if defined(CONFIG_ICE)
+			ice_reduction_uv = ice_get_undervolt_uv(ice_domain,
+								   old->table[j].rate);
+			if (ice_reduction_uv) {
+				if (unlikely(old->table[j].volt < ice_reduction_uv)) {
+					pr_warn("[ICE] ignoring excessive offset for %s at %u kHz\n",
+						vclk->name, old->table[j].rate);
+				} else {
+					old->table[j].volt -= ice_reduction_uv;
+				}
+			}
+#endif
 			new->table[j].rate = old->table[j].rate;
 			new->table[j].volt = old->table[j].volt;
 		}
-		#if defined(CONFIG_ICE)
-		pr_info("[ICE] Undervolt offsets applied.\n");
-		#endif
+#if defined(CONFIG_ICE)
+		if (ice_domain != ICE_DOMAIN_NONE)
+			pr_info("[ICE] processed %s voltage table\n", vclk->name);
+#endif
 
 		for (j = 0; j < fvmap_header[i].num_of_pll; j++) {
 			clks = sram_base + fvmap_header[i].o_members;
