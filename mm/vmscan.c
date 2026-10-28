@@ -4260,8 +4260,6 @@ static void lru_gen_shrink_lruvec(struct lruvec *lruvec, struct mem_cgroup *memc
 
 		if (sc->may_swap)
 			swappiness = get_swappiness(memcg);
-		else if (global_reclaim(sc) && get_swappiness(memcg))
-			swappiness = 1;
 		else
 			swappiness = 0;
 
