@@ -3477,7 +3477,6 @@ next:
 	/* see the comment on lru_gen_struct */
 	if (can_swap) {
 		min_seq[LRU_GEN_ANON] = min(min_seq[LRU_GEN_ANON], min_seq[LRU_GEN_FILE]);
-		min_seq[LRU_GEN_FILE] = max(min_seq[LRU_GEN_ANON], lrugen->min_seq[LRU_GEN_FILE]);
 	}
 
 	for (type = !can_swap; type < ANON_AND_FILE; type++) {
