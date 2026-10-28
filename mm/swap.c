@@ -211,6 +211,12 @@ static void pagevec_move_tail_fn(struct page *page, struct lruvec *lruvec,
 {
 	int *pgmoved = arg;
 
+#ifdef CONFIG_LRU_GEN
+	/* Generation pages must stay on their generation lists. */
+	if (page_lru_gen(page) >= 0)
+		return;
+#endif
+
 	if (PageLRU(page) && !PageActive(page) && !PageUnevictable(page)) {
 		enum lru_list lru = page_lru_base_type(page);
 		list_move_tail(&page->lru, &lruvec->lists[lru]);
