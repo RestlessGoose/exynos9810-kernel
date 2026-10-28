@@ -4337,7 +4337,7 @@ static bool fill_evictable(struct lruvec *lruvec)
 			VM_BUG_ON_PAGE(PageUnevictable(page), page);
 			VM_BUG_ON_PAGE(PageActive(page) != active, page);
 			VM_BUG_ON_PAGE(page_is_file_cache(page) != type, page);
-			VM_BUG_ON_PAGE(page_lru_gen(page) < MAX_NR_GENS, page);
+			VM_BUG_ON_PAGE(page_lru_gen(page) != -1, page);
 
 			prefetchw_prev_lru_page(page, head, flags);
 
