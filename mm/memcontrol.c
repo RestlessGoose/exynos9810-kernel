@@ -5098,18 +5098,14 @@ static void mem_cgroup_move_task(void)
 static void mem_cgroup_attach(struct cgroup_taskset *tset)
 {
 	struct cgroup_subsys_state *css;
-	struct task_struct *task = NULL;
+	struct task_struct *task;
 
-	cgroup_taskset_for_each_leader(task, css, tset)
-		break;
-
-	if (!task)
-		return;
-
-	task_lock(task);
-	if (task->mm && task->mm->owner == task)
-		lru_gen_migrate_mm(task->mm);
-	task_unlock(task);
+	cgroup_taskset_for_each(task, css, tset) {
+		task_lock(task);
+		if (task->mm && task->mm->owner == task)
+			lru_gen_migrate_mm(task->mm);
+		task_unlock(task);
+	}
 }
 #else
 static void mem_cgroup_attach(struct cgroup_taskset *tset)
