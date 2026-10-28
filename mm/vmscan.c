@@ -2809,6 +2809,10 @@ void lru_gen_migrate_mm(struct mm_struct *mm)
 	if (mem_cgroup_disabled())
 		return;
 
+	/* Fork registers a new mm before waking its owner. */
+	if (list_empty(&mm->lru_gen.list))
+		return;
+
 	rcu_read_lock();
 	memcg = mem_cgroup_from_task(mm->owner);
 	rcu_read_unlock();
