@@ -235,9 +235,12 @@ static int irq_bh_worker(void *arg)
 		wait_for_completion_killable(&l_ctx.irq_bh_complete);
 
 		/* Deal with all pending notifications in one go */
-		while ((rx->hdr.write_cnt - rx->hdr.read_cnt) > 0) {
+		while ((READ_ONCE(rx->hdr.write_cnt) -
+			 rx->hdr.read_cnt) > 0) {
 			struct notification nf;
 
+			/* Observe publication before reading the published slot. */
+			rmb();
 			nf = rx->notification[
 				rx->hdr.read_cnt % rx->hdr.queue_size];
 
