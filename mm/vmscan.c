@@ -4964,6 +4964,18 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 	bool scan_adjusted;
 
 	if (lru_gen_enabled()) {
+#ifdef CONFIG_LRU_GEN
+		bool can_swap = sc->may_swap && get_swappiness(memcg);
+
+		/* Match MGLRU victim eligibility for slab reclaim. */
+		*lru_pages = 0;
+		for_each_evictable_lru(lru) {
+			if (!can_swap && !is_file_lru(lru))
+				continue;
+			*lru_pages += lruvec_lru_size(lruvec, lru,
+						    sc->reclaim_idx);
+		}
+#endif
 		lru_gen_shrink_lruvec(lruvec, memcg, sc);
 		return;
 	}
