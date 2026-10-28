@@ -1749,8 +1749,9 @@ putback_inactive_pages(struct lruvec *lruvec, struct list_head *page_list)
 		}
 		if (put_page_testzero(page)) {
 			__ClearPageLRU(page);
-			__ClearPageActive(page);
 			del_page_from_lru_list(page, lruvec, lru);
+			/* Clear activity restored by MGLRU deletion before freeing. */
+			__ClearPageActive(page);
 
 			if (unlikely(PageCompound(page))) {
 				spin_unlock_irq(&pgdat->lru_lock);
