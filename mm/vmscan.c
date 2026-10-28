@@ -2711,7 +2711,7 @@ static struct lru_gen_mm_list *get_mm_list(struct mem_cgroup *memcg)
 	};
 
 #ifdef CONFIG_MEMCG
-	if (memcg)
+	if (memcg && !mem_cgroup_disabled())
 		return &memcg->mm_list;
 #endif
 	VM_BUG_ON(!mem_cgroup_disabled());
