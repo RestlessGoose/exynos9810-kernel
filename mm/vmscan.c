@@ -3282,39 +3282,6 @@ static struct page *get_pfn_page(unsigned long pfn, struct mem_cgroup *memcg,
 }
 
 /* Page table aging adapted to the Linux 4.9 mm_walk API. */
-static void update_batch_size(struct lru_gen_mm_walk *walk, struct page *page,
-			      int old_gen, int new_gen)
-{
-	int type = page_is_file_cache(page);
-	int zone = page_zonenum(page);
-	int delta = hpage_nr_pages(page);
-
-	walk->batched++;
-	walk->nr_pages[old_gen][type][zone] -= delta;
-	walk->nr_pages[new_gen][type][zone] += delta;
-}
-
-static void reset_batch_size(struct lruvec *lruvec, struct lru_gen_mm_walk *walk)
-{
-	int gen, type, zone;
-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
-
-	walk->batched = 0;
-	for_each_gen_type_zone(gen, type, zone) {
-		enum lru_list lru = type * LRU_INACTIVE_FILE;
-		int delta = walk->nr_pages[gen][type][zone];
-
-		if (!delta)
-			continue;
-		walk->nr_pages[gen][type][zone] = 0;
-		WRITE_ONCE(lrugen->nr_pages[gen][type][zone],
-			   lrugen->nr_pages[gen][type][zone] + delta);
-		if (lru_gen_is_active(lruvec, gen))
-			lru += LRU_ACTIVE;
-		__update_lru_size(lruvec, lru, zone, delta);
-	}
-}
-
 static int should_skip_vma(unsigned long start, unsigned long end,
 			   struct mm_walk *walk)
 {
@@ -3366,6 +3333,7 @@ static int walk_pmd_entry(pmd_t *pmd, unsigned long start, unsigned long end,
 	arch_enter_lazy_mmu_mode();
 	for (addr = start; addr < end; addr += PAGE_SIZE, pte++) {
 		unsigned long pfn;
+		unsigned long flags;
 		struct page *page;
 		int old_gen;
 
@@ -3391,9 +3359,23 @@ static int walk_pmd_entry(pmd_t *pmd, unsigned long start, unsigned long end,
 		    !(PageAnon(page) && PageSwapBacked(page) && !PageSwapCache(page)))
 			set_page_dirty(page);
 
+		/*
+		 * 4.9 memcg LRU counters cannot go negative, even temporarily.
+		 * Publish the generation and its accounting under the same lock
+		 * used by isolation, freeing and generation transitions.
+		 */
+		spin_lock_irqsave(&pgdat->lru_lock, flags);
+		/* Charging an uncharged LRU page can change its lruvec. */
+		if (get_pfn_page(pfn, memcg, pgdat) != page) {
+			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+			continue;
+		}
 		old_gen = page_update_gen(page, new_gen);
-		if (old_gen >= 0 && old_gen != new_gen)
-			update_batch_size(priv, page, old_gen, new_gen);
+		if (old_gen >= 0 && old_gen != new_gen) {
+			lru_gen_update_size(priv->lruvec, page, old_gen, new_gen);
+			priv->batched++;
+		}
+		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
 	}
 	arch_leave_lazy_mmu_mode();
 	pte_unmap(first);
@@ -3434,11 +3416,7 @@ static void walk_mm(struct lruvec *lruvec, struct mm_struct *mm,
 				err = 0;
 			up_read(&mm->mmap_sem);
 
-			if (priv->batched) {
-				spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
-				reset_batch_size(lruvec, priv);
-				spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
-			}
+			priv->batched = 0;
 		}
 		mem_cgroup_unlock_pages();
 		cond_resched();
@@ -3867,10 +3845,8 @@ void lru_gen_look_around(struct page *page, struct vm_area_struct *vma,
 	if (!mem_cgroup_trylock_pages(memcg))
 		return;
 
-	if (!walk) {
-		spin_lock_irq(&pgdat->lru_lock);
-		new_gen = lru_gen_from_seq(lruvec->lrugen.max_seq);
-	}
+	spin_lock_irq(&pgdat->lru_lock);
+	new_gen = lru_gen_from_seq(lruvec->lrugen.max_seq);
 
 	for_each_set_bit(i, bitmap, MIN_LRU_BATCH) {
 		struct mem_cgroup *page_memcg;
@@ -3886,14 +3862,10 @@ void lru_gen_look_around(struct page *page, struct vm_area_struct *vma,
 		if (old_gen < 0 || old_gen == new_gen)
 			continue;
 
-		if (walk)
-			update_batch_size(walk, page, old_gen, new_gen);
-		else
-			lru_gen_update_size(lruvec, page, old_gen, new_gen);
+		lru_gen_update_size(lruvec, page, old_gen, new_gen);
 	}
 
-	if (!walk)
-		spin_unlock_irq(&pgdat->lru_lock);
+	spin_unlock_irq(&pgdat->lru_lock);
 
 	mem_cgroup_unlock_pages();
 }
@@ -4178,7 +4150,6 @@ static int evict_pages(struct lruvec *lruvec, struct scan_control *sc, int swapp
 	unsigned long nr_congested = 0;
 	unsigned long nr_writeback = 0;
 	unsigned long nr_immediate = 0;
-	struct lru_gen_mm_walk *walk;
 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
@@ -4215,11 +4186,6 @@ static int evict_pages(struct lruvec *lruvec, struct scan_control *sc, int swapp
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 
 	putback_inactive_pages(lruvec, &list);
-
-	walk = current_is_kswapd() && current->reclaim_state ?
-		current->reclaim_state->mm_walk : NULL;
-	if (walk && walk->lruvec == lruvec && walk->batched)
-		reset_batch_size(lruvec, walk);
 
 	item = current_is_kswapd() ? PGSTEAL_KSWAPD : PGSTEAL_DIRECT;
 	if (global_reclaim(sc))
@@ -4349,7 +4315,6 @@ static bool __maybe_unused state_is_valid(struct lruvec *lruvec)
 			if (!list_empty(&lrugen->lists[gen][type][zone]))
 				return false;
 
-			/* unlikely but not a bug when reset_batch_size() is pending */
 			VM_WARN_ON(lrugen->nr_pages[gen][type][zone]);
 		}
 	}

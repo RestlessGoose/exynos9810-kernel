@@ -351,11 +351,9 @@ struct lru_gen_mm_walk {
 	unsigned long next_addr;
 	/* to batch page table entries */
 	unsigned long bitmap[BITS_TO_LONGS(MIN_LRU_BATCH)];
-	/* to batch promoted pages */
-	int nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
 	/* to batch the mm stats */
 	int mm_stats[NR_MM_STATS];
-	/* total batched items */
+	/* promoted pages since the last walk_page_range() restart */
 	int batched;
 	bool can_swap;
 	bool full_scan;
