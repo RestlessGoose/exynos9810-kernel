@@ -232,8 +232,10 @@ static int irq_bh_worker(void *arg)
 {
 	struct notification_queue *rx = l_ctx.nq.rx;
 
-	while (l_ctx.irq_bh_active) {
-		wait_for_completion_killable(&l_ctx.irq_bh_complete);
+	while (READ_ONCE(l_ctx.irq_bh_active)) {
+		wait_for_completion(&l_ctx.irq_bh_complete);
+		if (!READ_ONCE(l_ctx.irq_bh_active) || kthread_should_stop())
+			break;
 
 		/* Deal with all pending notifications in one go */
 		while ((READ_ONCE(rx->hdr.write_cnt) -
@@ -539,6 +541,21 @@ void nq_reset_idle_timeout(void)
 	mutex_unlock(&l_ctx.buffer_mutex);
 }
 
+/* Join the worker before releasing the reference taken before its first wake. */
+static void stop_irq_bh(void)
+{
+	struct task_struct *thread = l_ctx.irq_bh_thread;
+
+	if (!thread)
+		return;
+
+	WRITE_ONCE(l_ctx.irq_bh_active, false);
+	complete(&l_ctx.irq_bh_complete);
+	kthread_stop(thread);
+	l_ctx.irq_bh_thread = NULL;
+	put_task_struct(thread);
+}
+
 int nq_start(void)
 {
 	size_t q_len = ALIGN(2 * (sizeof(struct notification_queue_header) +
@@ -645,21 +662,31 @@ int nq_start(void)
 	} while (ret == EAGAIN);
 
 	/* Set up S-SIQ interrupt handler and its bottom-half */
-	l_ctx.irq_bh_active = true;
-	l_ctx.irq_bh_thread = kthread_run(irq_bh_worker, NULL, "tee_irq_bh");
+	reinit_completion(&l_ctx.irq_bh_complete);
+	WRITE_ONCE(l_ctx.irq_bh_active, true);
+	l_ctx.irq_bh_thread = kthread_create(irq_bh_worker, NULL, "tee_irq_bh");
 	if (IS_ERR(l_ctx.irq_bh_thread)) {
+		ret = PTR_ERR(l_ctx.irq_bh_thread);
+		l_ctx.irq_bh_thread = NULL;
+		WRITE_ONCE(l_ctx.irq_bh_active, false);
 		mc_dev_err("irq_bh_worker thread creation failed");
-		return PTR_ERR(l_ctx.irq_bh_thread);
+		return ret;
 	}
-	return request_irq(l_ctx.irq, irq_handler, IRQF_TRIGGER_RISING,
-			   "trustonic", NULL);
+	/* Keep the task valid even if it exits before kthread_stop(). */
+	get_task_struct(l_ctx.irq_bh_thread);
+	wake_up_process(l_ctx.irq_bh_thread);
+
+	ret = request_irq(l_ctx.irq, irq_handler, IRQF_TRIGGER_RISING,
+			  "trustonic", NULL);
+	if (ret)
+		stop_irq_bh();
+	return ret;
 }
 
 void nq_stop(void)
 {
 	free_irq(l_ctx.irq, NULL);
-	l_ctx.irq_bh_active = false;
-	kthread_stop(l_ctx.irq_bh_thread);
+	stop_irq_bh();
 }
 
 int nq_init(void)
