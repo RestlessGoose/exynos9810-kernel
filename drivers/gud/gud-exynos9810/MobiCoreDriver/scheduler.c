@@ -19,6 +19,7 @@
 #include <linux/completion.h>
 #include <linux/stringify.h>
 #include <linux/version.h>
+#include <linux/jiffies.h>
 
 #include "public/mc_user.h"
 
@@ -50,14 +51,37 @@ static struct sched_ctx {
 	bool			suspended;
 } sched_ctx;
 
+/* Request shadows use request_mutex; progress has one scheduler writer. */
+static struct mc_sched_diag_snapshot sched_diag;
+
+static void mc_scheduler_diag_stage(enum mc_sched_diag_stage stage)
+{
+	WRITE_ONCE(sched_diag.tick, READ_ONCE(jiffies));
+	WRITE_ONCE(sched_diag.stage, stage);
+}
+
+void mc_scheduler_diag_snapshot(struct mc_sched_diag_snapshot *diag)
+{
+	diag->requests = READ_ONCE(sched_diag.requests);
+	diag->request = READ_ONCE(sched_diag.request);
+	diag->calls = READ_ONCE(sched_diag.calls);
+	diag->returns = READ_ONCE(sched_diag.returns);
+	diag->call = READ_ONCE(sched_diag.call);
+	diag->stage = READ_ONCE(sched_diag.stage);
+	diag->last_ret = READ_ONCE(sched_diag.last_ret);
+	diag->tick = READ_ONCE(sched_diag.tick);
+}
+
 static int mc_scheduler_command(enum sched_command command)
 {
 	if (IS_ERR_OR_NULL(sched_ctx.thread))
 		return -EFAULT;
 
 	mutex_lock(&sched_ctx.request_mutex);
+	WRITE_ONCE(sched_diag.requests, sched_diag.requests + 1);
 	if (sched_ctx.request < command) {
 		sched_ctx.request = command;
+		WRITE_ONCE(sched_diag.request, command);
 		complete(&sched_ctx.idle_complete);
 	}
 
@@ -129,6 +153,7 @@ static int tee_scheduler(void *arg)
 		s32 timeout_ms = -1;
 		bool pm_request = false;
 
+		mc_scheduler_diag_stage(MC_SCHED_DIAG_IDLE);
 		if (sched_ctx.suspended || nq_get_idle_timeout(&timeout_ms)) {
 			/* If timeout is 0 we keep scheduling the SWd */
 			if (!timeout_ms) {
@@ -162,6 +187,7 @@ static int tee_scheduler(void *arg)
 		if (kthread_should_stop() || !sched_ctx.thread_run)
 			break;
 
+		mc_scheduler_diag_stage(MC_SCHED_DIAG_SELECTING);
 		/* Get requested command if any */
 		mutex_lock(&sched_ctx.request_mutex);
 		if (sched_ctx.request == YIELD)
@@ -183,18 +209,29 @@ static int tee_scheduler(void *arg)
 			nq_update_time();
 
 		sched_ctx.request = NONE;
+		WRITE_ONCE(sched_diag.request, NONE);
 		mutex_unlock(&sched_ctx.request_mutex);
 
 		/* Reset timeout so we don't loop if SWd halted */
 		nq_reset_idle_timeout();
 		if (timeslice--) {
 			/* Resume SWd from where it was */
+			WRITE_ONCE(sched_diag.call, MC_NQ_YIELD);
+			WRITE_ONCE(sched_diag.calls, sched_diag.calls + 1);
+			mc_scheduler_diag_stage(MC_SCHED_DIAG_FASTCALL);
 			ret = mc_fc_yield();
 		} else {
 			timeslice = SCHEDULING_FREQ;
 			/* Call SWd scheduler */
+			WRITE_ONCE(sched_diag.call, MC_NQ_NSIQ);
+			WRITE_ONCE(sched_diag.calls, sched_diag.calls + 1);
+			mc_scheduler_diag_stage(MC_SCHED_DIAG_FASTCALL);
 			ret = mc_fc_nsiq();
 		}
+
+		WRITE_ONCE(sched_diag.last_ret, ret);
+		WRITE_ONCE(sched_diag.returns, sched_diag.returns + 1);
+		mc_scheduler_diag_stage(MC_SCHED_DIAG_RETURNED);
 
 		/* Always flush log buffer after the SWd has run */
 		mc_logging_run();
@@ -210,11 +247,13 @@ static int tee_scheduler(void *arg)
 
 		mutex_unlock(&sched_ctx.request_mutex);
 
+		mc_scheduler_diag_stage(MC_SCHED_DIAG_FLUSHING);
 		/* Flush pending notifications if possible */
 		if (nq_notifications_flush())
 			complete(&sched_ctx.idle_complete);
 	}
 
+	mc_scheduler_diag_stage(MC_SCHED_DIAG_EXITED);
 	mc_dev_devel("exit, ret is %d", ret);
 	return ret;
 }
