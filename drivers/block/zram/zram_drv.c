@@ -415,6 +415,7 @@ static void fallocate_block(struct zram *zram, unsigned long blk_idx)
 	mutex_unlock(&zram->blk_bitmap_lock);
 }
 
+/* Caller holds wbd_lock across backing-device replacement and startup. */
 static int init_lru_writeback(struct zram *zram)
 {
 	struct sched_param param = { .sched_priority = 0 };
@@ -425,7 +426,7 @@ static int init_lru_writeback(struct zram *zram)
 	zram->wb_table = kvzalloc(sizeof(u8) * zram->nr_pages, GFP_KERNEL);
 	if (!zram->wb_table) {
 		ret = -ENOMEM;
-		return ret;
+		goto out;
 	}
 	/* bitmap for 2MB block */
 	bitmap_sz = (BITS_TO_LONGS(zram->nr_pages) * sizeof(long)) / NR_FALLOC_PAGES;
@@ -441,23 +442,29 @@ static int init_lru_writeback(struct zram *zram)
 
 	bitmap_sz = BITS_TO_LONGS(zram->nr_pages) * sizeof(long) / NR_ZWBS;
 	/* backing dev should be large enough for chunk writeback */
-	if (!bitmap_sz)
-		return -EINVAL;
+	if (!bitmap_sz) {
+		ret = -EINVAL;
+		goto out;
+	}
 	zram->chunk_bitmap = kvzalloc(bitmap_sz, GFP_KERNEL);
 	if (!zram->chunk_bitmap) {
 		ret = -ENOMEM;
 		goto out;
 	}
 
-	zram->wbd = kthread_run(zram_wbd, zram, "%s_wbd", zram->disk->disk_name);
+	zram->wbd = kthread_create(zram_wbd, zram, "%s_wbd", zram->disk->disk_name);
 	if (IS_ERR(zram->wbd)) {
 		ret = PTR_ERR(zram->wbd);
+		zram->wbd = NULL;
 		goto out;
 	}
 
+	/* The child may return as soon as alloc_zwbs() fails. */
+	get_task_struct(zram->wbd);
+	sched_setscheduler(zram->wbd, SCHED_IDLE, &param);
 	g_zram = zram;
 	zram->wb_limit_enable = true;
-	sched_setscheduler(zram->wbd, SCHED_IDLE, &param);
+	wake_up_process(zram->wbd);
 
 	return ret;
 out:
@@ -474,21 +481,32 @@ out:
 	return ret;
 }
 
-static void stop_lru_writeback(struct zram *zram)
+/* Caller holds wbd_lock; the worker never takes this mutex. */
+static void stop_lru_writeback_locked(struct zram *zram)
 {
-	if (!IS_ERR_OR_NULL(zram->wbd)) {
+	struct task_struct *thread = zram->wbd;
+
+	if (!IS_ERR_OR_NULL(thread)) {
 		g_zram = NULL;
-		kthread_stop(zram->wbd);
+		kthread_stop(thread);
 		zram->wbd = NULL;
+		put_task_struct(thread);
 	}
 }
 
+static void stop_lru_writeback(struct zram *zram)
+{
+	mutex_lock(&zram->wbd_lock);
+	stop_lru_writeback_locked(zram);
+	mutex_unlock(&zram->wbd_lock);
+}
+
+/* Caller holds wbd_lock and has stopped the worker. */
 static void deinit_lru_writeback(struct zram *zram)
 {
 	unsigned long flags;
 	u8 *wb_table_tmp = zram->wb_table;
 
-	stop_lru_writeback(zram);
 	if (zram->chunk_bitmap) {
 		kvfree(zram->chunk_bitmap);
 		zram->chunk_bitmap = NULL;
@@ -574,10 +592,14 @@ static ssize_t writeback_limit_show(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%llu\n", val);
 }
 
-static void reset_bdev(struct zram *zram)
+/* With LRU writeback enabled, caller holds wbd_lock. */
+static void reset_bdev_locked(struct zram *zram)
 {
 	struct block_device *bdev;
 
+#ifdef CONFIG_ZRAM_LRU_WRITEBACK
+	stop_lru_writeback_locked(zram);
+#endif
 	if (!zram->backing_dev)
 		return;
 
@@ -598,6 +620,13 @@ static void reset_bdev(struct zram *zram)
 	deinit_lru_writeback(zram);
 #endif
 }
+
+#ifndef CONFIG_ZRAM_LRU_WRITEBACK
+static void reset_bdev(struct zram *zram)
+{
+	reset_bdev_locked(zram);
+}
+#endif
 
 static ssize_t backing_dev_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -648,6 +677,13 @@ static ssize_t backing_dev_store(struct device *dev,
 		return -ENOMEM;
 
 	down_write(&zram->init_lock);
+#ifdef CONFIG_ZRAM_LRU_WRITEBACK
+	mutex_lock(&zram->wbd_lock);
+	if (READ_ONCE(zram->claim)) {
+		err = -EBUSY;
+		goto out;
+	}
+#endif
 	if (init_done(zram)) {
 		pr_info("Can't setup backing device for initialized device\n");
 		err = -EBUSY;
@@ -696,7 +732,7 @@ static ssize_t backing_dev_store(struct device *dev,
 	if (err)
 		goto out;
 
-	reset_bdev(zram);
+	reset_bdev_locked(zram);
 
 	zram->old_block_size = old_block_size;
 	zram->bdev = bdev;
@@ -720,6 +756,9 @@ static ssize_t backing_dev_store(struct device *dev,
 	 */
 	zram->disk->queue->backing_dev_info.capabilities &=
 			~BDI_CAP_SYNCHRONOUS_IO;
+#ifdef CONFIG_ZRAM_LRU_WRITEBACK
+	mutex_unlock(&zram->wbd_lock);
+#endif
 	up_write(&zram->init_lock);
 
 	pr_info("setup backing device %s\n", file_name);
@@ -744,6 +783,9 @@ out:
 	if (backing_dev)
 		filp_close(backing_dev, NULL);
 
+#ifdef CONFIG_ZRAM_LRU_WRITEBACK
+	mutex_unlock(&zram->wbd_lock);
+#endif
 	up_write(&zram->init_lock);
 
 	kfree(file_name);
@@ -1048,6 +1090,8 @@ void free_zwbs(struct zwbs **zwbs)
 int alloc_zwbs(struct zwbs **zwbs)
 {
 	int i;
+
+	memset(zwbs, 0, NR_ZWBS * sizeof(*zwbs));
 
 	for (i = 0; i < NR_ZWBS; i++) {
 		zwbs[i] = kzalloc(sizeof(struct zwbs), GFP_KERNEL);
@@ -3035,10 +3079,17 @@ static void zram_reset_device(struct zram *zram)
 	u64 disksize;
 
 	down_write(&zram->init_lock);
+#ifdef CONFIG_ZRAM_LRU_WRITEBACK
+	mutex_lock(&zram->wbd_lock);
+	stop_lru_writeback_locked(zram);
+#endif
 
 	zram->limit_pages = 0;
 
 	if (!init_done(zram)) {
+#ifdef CONFIG_ZRAM_LRU_WRITEBACK
+		mutex_unlock(&zram->wbd_lock);
+#endif
 		up_write(&zram->init_lock);
 		return;
 	}
@@ -3055,7 +3106,12 @@ static void zram_reset_device(struct zram *zram)
 	zram_meta_free(zram, disksize);
 	memset(&zram->stats, 0, sizeof(zram->stats));
 	zcomp_destroy(comp);
+#ifdef CONFIG_ZRAM_LRU_WRITEBACK
+	reset_bdev_locked(zram);
+	mutex_unlock(&zram->wbd_lock);
+#else
 	reset_bdev(zram);
+#endif
 }
 
 static ssize_t disksize_store(struct device *dev,
@@ -3255,6 +3311,7 @@ static int zram_add(void)
 	spin_lock_init(&zram->wb_table_lock);
 	spin_lock_init(&zram->bitmap_lock);
 	mutex_init(&zram->blk_bitmap_lock);
+	mutex_init(&zram->wbd_lock);
 #endif
 	queue = blk_alloc_queue(GFP_KERNEL);
 	if (!queue) {

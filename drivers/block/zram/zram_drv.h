@@ -192,6 +192,8 @@ struct zram {
 	struct dentry *debugfs_dir;
 #endif
 #ifdef CONFIG_ZRAM_LRU_WRITEBACK
+	/* Serializes backing-device configuration and worker ownership. */
+	struct mutex wbd_lock;
 	struct task_struct *wbd;
 	wait_queue_head_t wbd_wait;
 	u8 *wb_table;
