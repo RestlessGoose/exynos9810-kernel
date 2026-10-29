@@ -47,6 +47,25 @@
 #include "fastcall.h"
 #include "logging.h"
 #include "mcp.h"
+#include "scheduler.h"
+
+/* Failure-only output; every field is an approximate scalar observation. */
+static void mcp_diag_progress(const char *phase)
+{
+	struct nq_diag_snapshot nq;
+	struct mc_sched_diag_snapshot sched;
+
+	nq_diag_snapshot(&nq);
+	mc_scheduler_diag_snapshot(&sched);
+	printk_deferred(KERN_ERR "TEE_NQ %s tx=%08x/%08x rx=%08x/%08x ov=%u sent=%08x irq=%08x bh=%u/%08x/%08x/%08x tick=%lu\n",
+			phase, nq.tx_write, nq.tx_read, nq.rx_write, nq.rx_read,
+			nq.overflow_depth, nq.tx_sent, nq.irqs, nq.stage,
+			nq.wakes, nq.rx_seen, nq.rx_done, nq.tick);
+	printk_deferred(KERN_ERR "TEE_SCHED %s req=%u kicks=%08x call=%u start=%08x done=%08x stage=%u ret=%d tick=%lu\n",
+			phase, sched.request, sched.requests, sched.call,
+			sched.calls, sched.returns, sched.stage, sched.last_ret,
+			sched.tick);
+}
 
 /* respond timeout for MCP notification, in secs */
 #define MCP_TIMEOUT		10
@@ -271,6 +290,7 @@ static inline int wait_mcp_notification(void)
 		if (ret > 0)
 			return 0;
 
+		mcp_diag_progress("wait_expired");
 		mc_dev_err("No answer after %ds", l_ctx.timeout * try);
 
 		/* Record progress before a diagnostic fastcall can block. */
@@ -302,6 +322,7 @@ static inline int wait_mcp_notification(void)
 
 	/* TEE halted or dead: dump status and SMC log */
 	//mark_mcp_dead();
+	mcp_diag_progress("terminal");
 	nq_dump_status();
 	panic("tbase halt");
 

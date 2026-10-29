@@ -45,6 +45,24 @@ struct nq_session {
 	u32			notif_count;
 };
 
+/* Approximate diagnostics: no payloads, list traversal or task dereferences. */
+enum nq_diag_stage {
+	NQ_DIAG_NOT_STARTED,
+	NQ_DIAG_WAITING,
+	NQ_DIAG_DRAINING,
+	NQ_DIAG_HANDLER,
+	NQ_DIAG_EXITED,
+};
+
+struct nq_diag_snapshot {
+	u32 tx_write, tx_read, rx_write, rx_read;
+	u32 overflow_depth, tx_sent, irqs, wakes, rx_seen, rx_done, stage;
+	unsigned long tick;
+};
+
+/* Caller must hold the existing MCI lifetime, e.g. an active MCP command. */
+void nq_diag_snapshot(struct nq_diag_snapshot *diag);
+
 /* Initialisation/cleanup */
 int nq_init(void);
 void nq_exit(void);

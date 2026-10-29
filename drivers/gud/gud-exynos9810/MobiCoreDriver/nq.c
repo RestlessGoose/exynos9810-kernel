@@ -20,6 +20,8 @@
 #include <linux/kthread.h>
 #include <linux/of_irq.h>
 #include <linux/version.h>
+#include <linux/atomic.h>
+#include <linux/jiffies.h>
 #if KERNEL_VERSION(4, 11, 0) <= LINUX_VERSION_CODE
 #include <linux/sched/clock.h>	/* local_clock */
 #endif
@@ -71,6 +73,40 @@ static struct {
 	struct mcp_time		*time;
 } l_ctx;
 
+/* Only irqs has multiple potential writers; other writers are serialized. */
+static struct {
+	atomic_t irqs;
+	u32 overflow_depth, tx_sent;
+	u32 wakes, rx_seen, rx_done, stage;
+	unsigned long tick;
+} nq_diag;
+
+static void nq_diag_stage(enum nq_diag_stage stage)
+{
+	WRITE_ONCE(nq_diag.tick, READ_ONCE(jiffies));
+	WRITE_ONCE(nq_diag.stage, stage);
+}
+
+void nq_diag_snapshot(struct nq_diag_snapshot *diag)
+{
+	struct notification_queue *tx = READ_ONCE(l_ctx.nq.tx);
+	struct notification_queue *rx = READ_ONCE(l_ctx.nq.rx);
+
+	/* Scalar samples can represent different instants; never retry. */
+	diag->tx_write = READ_ONCE(tx->hdr.write_cnt);
+	diag->tx_read = READ_ONCE(tx->hdr.read_cnt);
+	diag->rx_write = READ_ONCE(rx->hdr.write_cnt);
+	diag->rx_read = READ_ONCE(rx->hdr.read_cnt);
+	diag->overflow_depth = READ_ONCE(nq_diag.overflow_depth);
+	diag->tx_sent = READ_ONCE(nq_diag.tx_sent);
+	diag->irqs = (u32)atomic_read(&nq_diag.irqs);
+	diag->wakes = READ_ONCE(nq_diag.wakes);
+	diag->rx_seen = READ_ONCE(nq_diag.rx_seen);
+	diag->rx_done = READ_ONCE(nq_diag.rx_done);
+	diag->stage = READ_ONCE(nq_diag.stage);
+	diag->tick = READ_ONCE(nq_diag.tick);
+}
+
 static inline bool is_iwp_id(u32 id)
 {
 	return (id & SID_IWP_NOTIFICATION) != 0;
@@ -110,6 +146,7 @@ static inline void notif_queue_push(u32 session_id, u32 payload)
 	 * We want a ARM dsb() / ARM64 dsb(sy) here
 	 */
 	rmb();
+	WRITE_ONCE(nq_diag.tx_sent, nq_diag.tx_sent + 1);
 }
 
 static inline bool nq_notifications_flush_nolock(void)
@@ -125,6 +162,7 @@ static inline bool nq_notifications_flush_nolock(void)
 		notif_queue_push(session->id, session->payload);
 		nq_session_state_update(session, NQ_NOTIF_SENT);
 		list_del_init(&session->list);
+		WRITE_ONCE(nq_diag.overflow_depth, nq_diag.overflow_depth - 1);
 		flushed = true;
 	}
 
@@ -166,6 +204,8 @@ int nq_session_notify(struct nq_session *session, u32 id, u32 payload)
 			mc_dev_devel("push %x payload %x", session->id,
 				     payload);
 			list_add_tail(&session->list, &l_ctx.notifications);
+			WRITE_ONCE(nq_diag.overflow_depth,
+				   nq_diag.overflow_depth + 1);
 			nq_session_state_update(session, NQ_NOTIF_QUEUED);
 		}
 
@@ -233,10 +273,13 @@ static int irq_bh_worker(void *arg)
 	struct notification_queue *rx = l_ctx.nq.rx;
 
 	while (READ_ONCE(l_ctx.irq_bh_active)) {
+		nq_diag_stage(NQ_DIAG_WAITING);
 		wait_for_completion(&l_ctx.irq_bh_complete);
+		WRITE_ONCE(nq_diag.wakes, nq_diag.wakes + 1);
 		if (!READ_ONCE(l_ctx.irq_bh_active) || kthread_should_stop())
 			break;
 
+		nq_diag_stage(NQ_DIAG_DRAINING);
 		/* Deal with all pending notifications in one go */
 		while ((READ_ONCE(rx->hdr.write_cnt) -
 			 rx->hdr.read_cnt) > 0) {
@@ -258,7 +301,11 @@ static int irq_bh_worker(void *arg)
 			 * We want a ARM dsb() / ARM64 dsb(sy) here
 			 */
 			rmb();
+			WRITE_ONCE(nq_diag.rx_seen, nq_diag.rx_seen + 1);
+			nq_diag_stage(NQ_DIAG_HANDLER);
 			nq_notif_handler(nf.session_id, nf.payload);
+			WRITE_ONCE(nq_diag.rx_done, nq_diag.rx_done + 1);
+			nq_diag_stage(NQ_DIAG_DRAINING);
 		}
 
 		/*
@@ -271,11 +318,13 @@ static int irq_bh_worker(void *arg)
 		if (l_ctx.scheduler_cb)
 			l_ctx.scheduler_cb(MC_NQ_NSIQ);
 	}
+	nq_diag_stage(NQ_DIAG_EXITED);
 	return 0;
 }
 
 static irqreturn_t irq_handler(int intr, void *arg)
 {
+	atomic_inc(&nq_diag.irqs);
 	/* wake up thread to continue handling this interrupt */
 	complete(&l_ctx.irq_bh_complete);
 	return IRQ_HANDLED;
@@ -305,6 +354,8 @@ u64 nq_session_notif_cpu_clk(const struct nq_session *session)
 void nq_session_exit(struct nq_session *session)
 {
 	mutex_lock(&l_ctx.notifications_mutex);
+	if (!list_empty(&session->list))
+		WRITE_ONCE(nq_diag.overflow_depth, nq_diag.overflow_depth - 1);
 	list_del(&session->list);
 	mutex_unlock(&l_ctx.notifications_mutex);
 }
@@ -694,6 +745,7 @@ int nq_init(void)
 	size_t q_len, buf_len;
 	unsigned long mci;
 
+	atomic_set(&nq_diag.irqs, 0);
 	mutex_init(&l_ctx.buffer_mutex);
 	init_completion(&l_ctx.irq_bh_complete);
 	/* Setup notification queue mutex */
