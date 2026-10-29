@@ -65,6 +65,7 @@ static struct {
 	 * notification queue overflows, so no session gets its notification
 	 * lost, especially MCP.
 	 */
+	/* Protects notifications and scheduler_cb, including invocation. */
 	struct mutex		notifications_mutex;
 	struct list_head	notifications;
 	/* Dump buffer */
@@ -183,10 +184,11 @@ int nq_session_notify(struct nq_session *session, u32 id, u32 payload)
 {
 	int ret = 0;
 
-	if (!l_ctx.scheduler_cb)
-		return -EAGAIN;
-
 	mutex_lock(&l_ctx.notifications_mutex);
+	if (!l_ctx.scheduler_cb) {
+		ret = -EAGAIN;
+		goto out;
+	}
 	if (!list_empty(&l_ctx.notifications) || notif_queue_full()) {
 		if (!list_empty(&session->list)) {
 			if (id != session->id || payload != session->payload) {
@@ -223,6 +225,7 @@ int nq_session_notify(struct nq_session *session, u32 id, u32 payload)
 			ret = -EPROTO;
 	}
 
+out:
 	mutex_unlock(&l_ctx.notifications_mutex);
 	return ret;
 }
@@ -315,8 +318,10 @@ static int irq_bh_worker(void *arg)
 		 * In this case the S-SIQ tells NWd that SWd is no longer idle
 		 * an will need scheduling again.
 		 */
+		mutex_lock(&l_ctx.notifications_mutex);
 		if (l_ctx.scheduler_cb)
 			l_ctx.scheduler_cb(MC_NQ_NSIQ);
+		mutex_unlock(&l_ctx.notifications_mutex);
 	}
 	nq_diag_stage(NQ_DIAG_EXITED);
 	return 0;
@@ -519,7 +524,10 @@ void nq_dump_status(void)
 
 void nq_register_scheduler(int (*scheduler_cb)(enum nq_scheduler_commands))
 {
+	/* Unregister waits for both notification and IRQ-worker callbacks. */
+	mutex_lock(&l_ctx.notifications_mutex);
 	l_ctx.scheduler_cb = scheduler_cb;
+	mutex_unlock(&l_ctx.notifications_mutex);
 }
 
 void nq_register_crash_handler(void (*crash_handler_cb)(void))
