@@ -28,6 +28,7 @@
 #include <asm/barrier.h>
 #include <linux/irq.h>
 #include <linux/version.h>
+#include <linux/jiffies.h>
 #if KERNEL_VERSION(4, 11, 0) <= LINUX_VERSION_CODE
 #include <linux/sched/clock.h>	/* local_clock */
 #endif
@@ -246,6 +247,12 @@ s32 mcp_session_exitcode(struct mcp_session *session)
 static inline int wait_mcp_notification(void)
 {
 	unsigned long timeout = msecs_to_jiffies(l_ctx.timeout * 1000);
+	unsigned long started = READ_ONCE(jiffies);
+	const char *reason = "MCP_TIMEOUT_EXHAUSTED";
+	int query_rc[MCP_RETRIES] = { 0 };
+	u32 query_ok = 0, last_status = 0;
+	bool status_valid = false;
+	unsigned int expired = 0;
 	int try;
 
 	/*
@@ -266,11 +273,32 @@ static inline int wait_mcp_notification(void)
 
 		mc_dev_err("No answer after %ds", l_ctx.timeout * try);
 
-		/* If SWd halted, exit now */
-		if (!mc_fc_info(MC_EXT_INFO_ID_MCI_VERSION, &status, NULL) &&
-		    status == MC_STATUS_HALT)
-			break;
+		/* Record progress before a diagnostic fastcall can block. */
+		expired++;
+		printk_deferred(KERN_ERR "TEE_MCP probe=pending a=%u ms=%u wait_ms=%u\n",
+				expired,
+				jiffies_to_msecs(READ_ONCE(jiffies) - started),
+				jiffies_to_msecs(timeout));
+
+		/* Only a successful query provides an observed secure status. */
+		query_rc[try - 1] = mc_fc_info(MC_EXT_INFO_ID_MCI_VERSION,
+					     &status, NULL);
+		if (!query_rc[try - 1]) {
+			query_ok |= 1U << (try - 1);
+			last_status = status;
+			status_valid = true;
+			if (status == MC_STATUS_HALT) {
+				reason = "HALT_REPORTED";
+				break;
+			}
+		}
 	}
+
+	printk_deferred(KERN_ERR "TEE_MCP reason=%s a=%u ms=%u ok=%x rc=%d/%d/%d valid=%u st=%x\n",
+			reason, expired,
+			jiffies_to_msecs(READ_ONCE(jiffies) - started),
+			query_ok, query_rc[0], query_rc[1], query_rc[2],
+			(unsigned int)status_valid, last_status);
 
 	/* TEE halted or dead: dump status and SMC log */
 	//mark_mcp_dead();
