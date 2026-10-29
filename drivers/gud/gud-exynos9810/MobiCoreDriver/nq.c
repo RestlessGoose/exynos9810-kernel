@@ -149,23 +149,22 @@ int nq_session_notify(struct nq_session *session, u32 id, u32 payload)
 		return -EAGAIN;
 
 	mutex_lock(&l_ctx.notifications_mutex);
-	session->id = id;
-	session->payload = payload;
 	if (!list_empty(&l_ctx.notifications) || notif_queue_full()) {
 		if (!list_empty(&session->list)) {
-			if (payload != session->payload) {
-				mc_dev_err("skip %x payload change %x -> %x",
+			if (id != session->id || payload != session->payload) {
+				mc_dev_err("skip queued change %x/%x -> %x/%x",
 					   session->id, session->payload,
-					   payload);
+					   id, payload);
 			} else {
 				mc_dev_devel("skip %x payload %x",
 					     session->id, payload);
 			}
 			ret = -EAGAIN;
 		} else {
+			session->id = id;
+			session->payload = payload;
 			mc_dev_devel("push %x payload %x", session->id,
 				     payload);
-			/* session->payload = payload; */
 			list_add_tail(&session->list, &l_ctx.notifications);
 			nq_session_state_update(session, NQ_NOTIF_QUEUED);
 		}
@@ -175,6 +174,8 @@ int nq_session_notify(struct nq_session *session, u32 id, u32 payload)
 		if (l_ctx.scheduler_cb(MC_NQ_YIELD))
 			ret = -EPROTO;
 	} else {
+		session->id = id;
+		session->payload = payload;
 		mc_dev_devel("send %x payload %x", session->id, payload);
 		notif_queue_push(session->id, payload);
 		nq_session_state_update(session, NQ_NOTIF_SENT);
