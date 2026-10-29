@@ -18,6 +18,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/bio.h>
+#include <linux/completion.h>
 #include <linux/bitops.h>
 #include <linux/blkdev.h>
 #include <linux/buffer_head.h>
@@ -1333,10 +1334,7 @@ static void zram_writeback_done(struct zram *zram,
 
 static void zram_writeback_end_io(struct bio *bio)
 {
-	if (g_zram && !g_zram->io_complete) {
-		g_zram->io_complete = true;
-		wake_up(&g_zram->wbd_wait);
-	}
+	complete(bio->bi_private);
 }
 
 static int zram_writeback_page(struct zram *zram, struct zwbs **zwbs,
@@ -1377,10 +1375,12 @@ retry:
 	if (sync) {
 		ret = submit_bio_wait(&bio);
 	} else {
+		DECLARE_COMPLETION_ONSTACK(done);
+
+		bio.bi_private = &done;
 		bio.bi_end_io = zram_writeback_end_io;
-		zram->io_complete = false;
 		submit_bio(&bio);
-		wait_event(zram->wbd_wait, zram->io_complete);
+		wait_for_completion(&done);
 		ret = bio.bi_error;
 	}
 	kfree(bio_vec);
