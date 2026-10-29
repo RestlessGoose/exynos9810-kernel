@@ -261,14 +261,20 @@ static int tee_scheduler(void *arg)
 int mc_scheduler_start(void)
 {
 	sched_ctx.thread_run = true;
-	sched_ctx.thread = kthread_run(tee_scheduler, NULL, "tee_scheduler");
+	sched_ctx.thread = kthread_create(tee_scheduler, NULL, "tee_scheduler");
 	if (IS_ERR(sched_ctx.thread)) {
+		int ret = PTR_ERR(sched_ctx.thread);
+
 		mc_dev_err("tee_scheduler thread creation failed");
-		return PTR_ERR(sched_ctx.thread);
+		sched_ctx.thread = NULL;
+		return ret;
 	}
 
+	/* Own the task before it can run and exit independently. */
+	get_task_struct(sched_ctx.thread);
 	/* ExySp: set affinity to little */
 	set_cpus_allowed_ptr(sched_ctx.thread, cpu_coregroup_mask(0));
+	wake_up_process(sched_ctx.thread);
 
 	nq_register_scheduler(mc_dev_command);
 	complete(&sched_ctx.idle_complete);
@@ -277,10 +283,13 @@ int mc_scheduler_start(void)
 
 void mc_scheduler_stop(void)
 {
+	struct task_struct *thread = sched_ctx.thread;
+
 	nq_register_scheduler(NULL);
 	sched_ctx.thread_run = false;
 	complete(&sched_ctx.idle_complete);
-	kthread_stop(sched_ctx.thread);
+	kthread_stop(thread);
+	put_task_struct(thread);
 }
 
 int mc_scheduler_init(void)
