@@ -279,14 +279,12 @@ int frame_manager_close(struct fimc_is_framemgr *this)
 {
 	u32 i;
 	unsigned long flag;
+	struct fimc_is_frame *frames;
 
 	spin_lock_irqsave(&this->slock, flag);
 
-	if (this->frames) {
-		vfree(this->frames);
-		this->frames = NULL;
-	}
-
+	frames = this->frames;
+	this->frames = NULL;
 	this->num_frames = 0;
 
 	for (i = 0; i < NR_FRAME_STATE; i++) {
@@ -295,6 +293,8 @@ int frame_manager_close(struct fimc_is_framemgr *this)
 	}
 
 	spin_unlock_irqrestore(&this->slock, flag);
+
+	vfree(frames);
 
 	return 0;
 }
