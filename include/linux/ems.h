@@ -33,7 +33,7 @@ struct task_band {
 	struct cpumask playable_cpus;
 
 	unsigned long util;
-	unsigned long last_update_time;
+	u64 last_update_time;
 };
 
 struct rq;

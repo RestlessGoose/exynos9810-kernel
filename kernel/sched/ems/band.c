@@ -6,6 +6,7 @@
  */
 
 #include <linux/of.h>
+#include <linux/ktime.h>
 #include <linux/spinlock.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -130,14 +131,42 @@ static void pick_playable_cpus(struct task_band *band)
 
 static unsigned long out_of_time = 100000000;	/* 100ms */
 
+/* Task timestamps belong to their CFS runqueue's PELT clock, including
+ * group throttling offsets. They cannot be aged against CPU0's wall clock.
+ */
+static bool band_task_stale(struct task_struct *p)
+{
+	struct cfs_rq *cfs_rq;
+	u64 last, now;
+	bool stale;
+
+	rcu_read_lock();
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	cfs_rq = READ_ONCE(p->se.cfs_rq);
+#else
+	cfs_rq = cfs_rq_of(&p->se);
+#endif
+	last = READ_ONCE(p->se.avg.last_update_time);
+	now = READ_ONCE(cfs_rq->avg.last_update_time);
+	stale = last && (s64)(now - last) >
+		(s64)((u64)out_of_time << READ_ONCE(sched_pelt_lshift));
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	/* Migration/attachment raced with this best-effort load snapshot. */
+	if (cfs_rq != READ_ONCE(p->se.cfs_rq))
+		stale = false;
+#endif
+	rcu_read_unlock();
+	return stale;
+}
+
 /* This function should be called protected with band->lock */
-static void __update_band(struct task_band *band, unsigned long now)
+static void __update_band(struct task_band *band, u64 now)
 {
 	struct task_struct *task;
 	unsigned long util_sum = 0;
 
 	list_for_each_entry(task, &band->members, band_members) {
-		if (now - task->se.avg.last_update_time > out_of_time)
+		if (band_task_stale(task))
 			continue;
 		util_sum += ml_task_util_est(task);
 	}
@@ -156,7 +185,7 @@ static int update_interval = 20000000;	/* 20ms */
 void update_band(struct task_struct *p, long old_util)
 {
 	struct task_band *band;
-	unsigned long now = cpu_rq(0)->clock_task;
+	u64 now = ktime_get_ns();
 
 	band = lookup_band(p);
 	if (!band)
@@ -235,7 +264,7 @@ static void join_band(struct task_struct *p)
 	band->member_count++;
 	trace_ems_manage_band(p, band->id, event);
 
-	__update_band(band, cpu_rq(0)->clock_task);
+	__update_band(band, ktime_get_ns());
 	raw_spin_unlock(&band->lock);
 
 	write_unlock(&band_rwlock);
@@ -266,7 +295,7 @@ static void leave_band(struct task_struct *p)
 		cpumask_clear(&band->playable_cpus);
 	}
 
-	__update_band(band, cpu_rq(0)->clock_task);
+	__update_band(band, ktime_get_ns());
 	raw_spin_unlock(&band->lock);
 
 	write_unlock(&band_rwlock);
