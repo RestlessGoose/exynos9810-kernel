@@ -920,6 +920,12 @@ static void pr_stop(struct cpufreq_policy *policy)
 	}
 	irq_work_sync(&pp->irq_work);
 	kthread_cancel_work_sync(&pp->work);
+	/* A running transition may have observed started before stop and
+	 * queued the watchdog after the first cancellation. Retire that
+	 * producer before the final drain; no work_lock is held here.
+	 */
+	if (pp->cl1)
+		cancel_delayed_work_sync(&pp->boost.spike_watchdog);
 }
 
 static void pr_limits(struct cpufreq_policy *policy)
