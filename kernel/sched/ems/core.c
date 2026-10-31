@@ -219,6 +219,8 @@ static ssize_t show_sched_topology(struct kobject *kobj,
 		int sched_domain_level = 0;
 
 		sd = rcu_dereference_check_sched_domain(cpu_rq(cpu)->sd);
+		if (!sd)
+			continue;
 		while (sd->parent) {
 			sched_domain_level++;
 			sd = sd->parent;
