@@ -958,9 +958,13 @@ static int pr_start(struct cpufreq_policy *policy)
 static void pr_stop(struct cpufreq_policy *policy)
 {
 	struct pragmatic_policy *pp = policy->governor_data;
+	unsigned long flags;
 	unsigned int cpu;
 
+	/* Serialize admission by delayed cap producers with shutdown. */
+	raw_spin_lock_irqsave(&pp->update_lock, flags);
 	WRITE_ONCE(pp->started, false);
+	raw_spin_unlock_irqrestore(&pp->update_lock, flags);
 	for_each_cpu(cpu, policy->cpus)
 		cpufreq_remove_update_util_hook(cpu);
 	synchronize_sched();
