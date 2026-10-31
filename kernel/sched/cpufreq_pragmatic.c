@@ -22,6 +22,7 @@
 #include <linux/math64.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/pm_qos.h>
 #include <linux/power_supply.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -111,6 +112,8 @@ struct pragmatic_policy {
 	struct task_struct *thread;
 	struct mutex work_lock;
 	bool work_in_progress, limits_changed, started;
+	bool transition_in_progress;
+	unsigned int retry_delay_us;
 	unsigned int next_freq;
 	u64 last_freq_update_time;
 	unsigned int up_rate_us, down_rate_us;
@@ -531,10 +534,8 @@ static inline bool pr_freq_ready(struct pragmatic_policy *pp, u64 now)
 	u32 up = READ_ONCE(pp->up_rate_us);
 	u32 down = READ_ONCE(pp->down_rate_us);
 
-	if (unlikely(pp->limits_changed)) {
-		pp->limits_changed = false;
+	if (unlikely(pp->limits_changed))
 		return true;
-	}
 	return delta >= (u64)min(up, down) * NSEC_PER_USEC;
 }
 
@@ -735,18 +736,50 @@ static unsigned int pr_shared_freq(struct pragmatic_policy *pp, u64 now)
 	return pr_select_freq(pp, util, max);
 }
 
+/* Match ACME's QoS clipping before caching a request. A relaxed ceiling
+ * must change this target even if utilization still asks for the same OPP.
+ */
+static unsigned int pr_effective_freq(struct pragmatic_policy *pp,
+				      unsigned int next)
+{
+	int qos_min = pm_qos_request(pp->cl1 ? PM_QOS_CLUSTER1_FREQ_MIN :
+					     PM_QOS_CLUSTER0_FREQ_MIN);
+	int qos_max = pm_qos_request(pp->cl1 ? PM_QOS_CLUSTER1_FREQ_MAX :
+					     PM_QOS_CLUSTER0_FREQ_MAX);
+	int index;
+
+	if (qos_min >= 0 && qos_max >= 0) {
+		next = max(next, (unsigned int)qos_min);
+		next = min(next, (unsigned int)qos_max);
+	}
+	index = cpufreq_frequency_table_target(pp->policy, next,
+					      CPUFREQ_RELATION_L);
+	return index < 0 ? next : pp->policy->freq_table[index].frequency;
+}
+
 static void pr_commit(struct pragmatic_policy *pp, u64 now, unsigned int next)
 {
 	u64 elapsed = now - pp->last_freq_update_time;
-	u32 delay = next > pp->next_freq ? READ_ONCE(pp->up_rate_us) :
-						 READ_ONCE(pp->down_rate_us);
+	unsigned int cur = READ_ONCE(pp->policy->cur);
+	u32 delay;
 
-	if (next != pp->next_freq &&
-	    elapsed < (u64)delay * NSEC_PER_USEC)
-		return;
-	if (next == pp->next_freq && !pp->limits_changed)
+	next = pr_effective_freq(pp, next);
+	delay = next > (next == pp->next_freq ? cur : pp->next_freq) ?
+		READ_ONCE(pp->up_rate_us) : READ_ONCE(pp->down_rate_us);
+	if (next == pp->next_freq) {
+		/* A queued/running request still owns this target. */
+		if (pp->work_in_progress || pp->transition_in_progress)
+			return;
+		if (next == cur && !pp->retry_delay_us && !pp->limits_changed)
+			return;
+		delay = max(delay, pp->retry_delay_us);
+	}
+	if (!pp->limits_changed && elapsed < (u64)delay * NSEC_PER_USEC)
 		return;
 
+	pp->limits_changed = false;
+	if (next != pp->next_freq)
+		pp->retry_delay_us = 0;
 	pp->next_freq = next;
 	pp->last_freq_update_time = now;
 	if (!pp->work_in_progress) {
@@ -783,9 +816,11 @@ static void pr_work(struct kthread_work *work)
 						  struct pragmatic_policy, work);
 	unsigned int freq;
 	unsigned long flags;
+	int ret;
 
 	raw_spin_lock_irqsave(&pp->update_lock, flags);
 	freq = pp->next_freq;
+	pp->transition_in_progress = true;
 	pp->work_in_progress = false;
 	raw_spin_unlock_irqrestore(&pp->update_lock, flags);
 
@@ -799,7 +834,7 @@ static void pr_work(struct kthread_work *work)
 	/* We must arm the one-shot timer after the driver has completed its
 	 * transition, not merely when the scheduler requests 2314 MHz.
 	 */
-	__cpufreq_driver_target(pp->policy, freq, CPUFREQ_RELATION_L);
+	ret = __cpufreq_driver_target(pp->policy, freq, CPUFREQ_RELATION_L);
 	if (pp->cl1 && READ_ONCE(pp->started)) {
 		struct pr_boost_state *b = &pp->boost;
 		if (READ_ONCE(pp->policy->cur) > b->cfg.stages_khz[1])
@@ -808,6 +843,19 @@ static void pr_work(struct kthread_work *work)
 		else
 			cancel_delayed_work(&b->spike_watchdog);
 	}
+	raw_spin_lock_irqsave(&pp->update_lock, flags);
+	pp->transition_in_progress = false;
+	if (pp->next_freq == freq &&
+	    (ret || READ_ONCE(pp->policy->cur) != freq)) {
+		/* Retry failures/clipping, but do not hammer a failing driver. */
+		pp->retry_delay_us = min(100000U, pp->retry_delay_us ?
+				pp->retry_delay_us * 2 :
+				max(1000U, max(READ_ONCE(pp->up_rate_us),
+					      READ_ONCE(pp->down_rate_us))));
+	} else {
+		pp->retry_delay_us = 0;
+	}
+	raw_spin_unlock_irqrestore(&pp->update_lock, flags);
 	mutex_unlock(&pp->work_lock);
 }
 
@@ -883,6 +931,8 @@ static int pr_start(struct cpufreq_policy *policy)
 	unsigned int cpu;
 
 	pp->work_in_progress = false;
+	pp->transition_in_progress = false;
+	pp->retry_delay_us = 0;
 	pp->limits_changed = true;
 	WRITE_ONCE(pp->started, true);
 	pp->next_freq = policy->cur;
