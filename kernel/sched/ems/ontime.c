@@ -10,6 +10,8 @@
 #include <linux/of.h>
 #include <linux/pm_qos.h>
 #include <linux/ems.h>
+#include <linux/rculist.h>
+#include <linux/slab.h>
 #include <linux/sched_energy.h>
 
 #include <trace/events/ems.h>
@@ -72,7 +74,7 @@ struct ontime_cond *get_current_cond(int cpu)
 {
 	struct ontime_cond *curr;
 
-	list_for_each_entry(curr, &cond_list, list) {
+	list_for_each_entry_rcu(curr, &cond_list, list) {
 		if (cpumask_test_cpu(cpu, &curr->cpus))
 			return curr;
 	}
@@ -142,7 +144,7 @@ ontime_select_fit_cpus(struct task_struct *p, struct cpumask *fit_cpus)
 		 * If runnable of the task is above upper boundary of source,
 		 * find fit cpus that have higher mips than source.
 		 */
-		list_for_each_entry(curr, &cond_list, list) {
+		list_for_each_entry_rcu(curr, &cond_list, list) {
 			int dst_cpu = cpumask_first(&curr->cpus);
 
 			if (is_faster_than(src_cpu, dst_cpu, p->sse))
@@ -792,10 +794,10 @@ static inline unsigned long get_boundary(unsigned long capacity, int ratio)
 static void __init
 parse_ontime(struct device_node *dn, struct ontime_cond *cond, int cnt)
 {
-	struct device_node *ontime, *coregroup;
+	struct device_node *ontime, *coregroup = NULL;
 	char name[15];
 	unsigned long capacity, capacity_s;
-	int prop;
+	int prop = 0;
 	int res = 0;
 
 	ontime = of_get_child_by_name(dn, "ontime");
@@ -835,7 +837,7 @@ parse_ontime(struct device_node *dn, struct ontime_cond *cond, int cnt)
 		goto disable;
 
 	cond->enabled = true;
-	return;
+	goto out;
 
 disable:
 	pr_err("ONTIME(%s): failed to parse ontime node\n", __func__);
@@ -844,40 +846,55 @@ disable:
 	cond->lower_boundary = 0;
 	cond->upper_boundary_s = ULONG_MAX;
 	cond->lower_boundary_s = 0;
+out:
+	of_node_put(coregroup);
+	of_node_put(ontime);
 }
 
 static int __init init_ontime(void)
 {
-	struct ontime_cond *cond;
+	LIST_HEAD(pending);
+	struct ontime_cond *cond, *tmp;
 	struct device_node *dn;
 	int cpu, cnt = 0;
-
-	INIT_LIST_HEAD(&cond_list);
 
 	dn = of_find_node_by_path("/cpus/ems");
 	if (!dn)
 		return 0;
 
-
 	if (!cpumask_equal(cpu_possible_mask, cpu_all_mask))
-		return 0;
+		goto out;
 
+	/* Keep allocation failures private: readers must not see freed nodes. */
 	for_each_possible_cpu(cpu) {
 		if (cpu != cpumask_first(cpu_coregroup_mask(cpu)))
 			continue;
 
-		cond = kzalloc(sizeof(struct ontime_cond), GFP_KERNEL);
+		cond = kzalloc(sizeof(*cond), GFP_KERNEL);
+		if (!cond)
+			goto free_pending;
 
 		cpumask_copy(&cond->cpus, cpu_coregroup_mask(cpu));
-
 		parse_ontime(dn, cond, cnt++);
-
-		list_add_tail(&cond->list, &cond_list);
+		list_add_tail(&cond->list, &pending);
 	}
 
+	/* Published conditions live for the lifetime of this built-in scheduler. */
+	list_for_each_entry_safe(cond, tmp, &pending, list) {
+		list_del(&cond->list);
+		list_add_tail_rcu(&cond->list, &cond_list);
+	}
 	ontime_sysfs_init();
-
+out:
 	of_node_put(dn);
 	return 0;
+
+free_pending:
+	list_for_each_entry_safe(cond, tmp, &pending, list) {
+		list_del(&cond->list);
+		kfree(cond);
+	}
+	of_node_put(dn);
+	return -ENOMEM;
 }
 late_initcall(init_ontime);
