@@ -19,6 +19,7 @@
  *                        Kernel Prefer Perf                          *
  **********************************************************************/
 struct plist_head kpp_list[STUNE_GROUP_COUNT];
+static int kpp_value[STUNE_GROUP_COUNT];
 
 static bool kpp_en;
 
@@ -27,13 +28,10 @@ int kpp_status(int grp_idx)
 	if (unlikely(!kpp_en))
 		return 0;
 
-	if (grp_idx >= STUNE_GROUP_COUNT)
+	if (grp_idx < 0 || grp_idx >= STUNE_GROUP_COUNT)
 		return -EINVAL;
 
-	if (plist_head_empty(&kpp_list[grp_idx]))
-		return 0;
-
-	return plist_last(&kpp_list[grp_idx])->prio;
+	return READ_ONCE(kpp_value[grp_idx]);
 }
 
 static DEFINE_SPINLOCK(kpp_lock);
@@ -41,17 +39,19 @@ static DEFINE_SPINLOCK(kpp_lock);
 void kpp_request(int grp_idx, struct kpp *req, int value)
 {
 	unsigned long flags;
+	int old_grp;
 
 	if (unlikely(!kpp_en))
 		return;
 
-	if (grp_idx >= STUNE_GROUP_COUNT)
-		return;
-
-	if (req->node.prio == value)
+	if (grp_idx < 0 || grp_idx >= STUNE_GROUP_COUNT)
 		return;
 
 	spin_lock_irqsave(&kpp_lock, flags);
+	if (req->node.prio == value)
+		goto out;
+
+	old_grp = req->active ? req->grp_idx : grp_idx;
 
 	/*
 	 * If the request already added to the list updates the value, remove
@@ -66,6 +66,10 @@ void kpp_request(int grp_idx, struct kpp *req, int value)
 	plist_add(&req->node, &kpp_list[grp_idx]);
 	req->grp_idx = grp_idx;
 
+	WRITE_ONCE(kpp_value[old_grp], plist_head_empty(&kpp_list[old_grp]) ?
+			0 : plist_last(&kpp_list[old_grp])->prio);
+	WRITE_ONCE(kpp_value[grp_idx], plist_last(&kpp_list[grp_idx])->prio);
+out:
 	spin_unlock_irqrestore(&kpp_lock, flags);
 }
 
