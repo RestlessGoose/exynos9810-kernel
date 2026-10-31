@@ -29,7 +29,7 @@ int select_perf_cpu(struct task_struct *p)
 
 	for_each_cpu_and(cpu, &p->cpus_allowed, cpu_active_mask) {
 		unsigned long capacity_orig = capacity_orig_of_sse(cpu, p->sse);
-		unsigned long wake_util;
+		unsigned long wake_util, spare_cap;
 
 		/*
 		 * A) Find best performance cpu.
@@ -77,10 +77,11 @@ int select_perf_cpu(struct task_struct *p)
 		 * cpu having a high performance is likely to be selected.
 		 */
 		wake_util = ml_cpu_util_wake(cpu, p);
-		if ((capacity_orig - wake_util) < max_spare_cap)
+		spare_cap = capacity_orig - min(capacity_orig, wake_util);
+		if (spare_cap < max_spare_cap)
 			continue;
 
-		max_spare_cap = capacity_orig - wake_util;
+		max_spare_cap = spare_cap;
 		backup_cpu = cpu;
 	}
 
