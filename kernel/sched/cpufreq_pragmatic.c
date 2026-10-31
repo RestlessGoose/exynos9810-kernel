@@ -390,6 +390,9 @@ static unsigned long pr_sample_util(int cpu)
 	return min_t(unsigned long, util, SCHED_CAPACITY_SCALE);
 }
 
+static unsigned int pr_effective_freq(struct pragmatic_policy *pp,
+				      unsigned int next);
+
 /*
  * Enforce a reduced ceiling even without another scheduler utilization tick.
  * This is necessary when an asynchronous cpufreq transition completes just
@@ -402,11 +405,11 @@ static void pr_force_cap(struct pragmatic_policy *pp, u32 cap)
 	unsigned long flags;
 
 	/* QoS or another actor may raise policy->min above our soft cap. */
-	cap = max(cap, READ_ONCE(policy->min));
+	cap = pr_effective_freq(pp, max(cap, READ_ONCE(policy->min)));
 	raw_spin_lock_irqsave(&pp->update_lock, flags);
 	if (READ_ONCE(pp->started) &&
 	    (pp->next_freq > cap || READ_ONCE(policy->cur) > cap)) {
-		pp->next_freq = cpufreq_driver_resolve_freq(policy, cap);
+		pp->next_freq = cap;
 		pp->last_freq_update_time = 0;
 		if (!pp->work_in_progress) {
 			pp->work_in_progress = true;
