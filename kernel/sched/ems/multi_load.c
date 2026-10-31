@@ -830,7 +830,7 @@ static void update_cpu_active_ratio_hist(struct part *pa, bool full, unsigned in
 	 */
 	if (count > period_hist_size) {
 		/* Only the last full ring survives; retain its final position. */
-		pa->hist_idx = (pa->hist_idx + count - period_hist_size) %
+		pa->hist_idx = (pa->hist_idx + (u64)count - period_hist_size) %
 				period_hist_size;
 		count = period_hist_size;
 	}
