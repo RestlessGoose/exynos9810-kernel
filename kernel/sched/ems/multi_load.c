@@ -828,6 +828,12 @@ static void update_cpu_active_ratio_hist(struct part *pa, bool full, unsigned in
 	 * If count is positive, there are empty/full periods.
 	 * These will be reflected in the history.
 	 */
+	if (count > period_hist_size) {
+		/* Only the last full ring survives; retain its final position. */
+		pa->hist_idx = (pa->hist_idx + count - period_hist_size) %
+				period_hist_size;
+		count = period_hist_size;
+	}
 	while (count--) {
 		pa->hist_idx = inc_hist_idx(pa->hist_idx);
 		pa->hist[pa->hist_idx] = full ? SCHED_CAPACITY_SCALE : 0;
