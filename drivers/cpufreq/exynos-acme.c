@@ -595,15 +595,11 @@ static int exynos_cpufreq_pm_qos_callback(struct notifier_block *nb,
 		update_qos_capacity(cpumask_first(&domain->cpus), val, policy->cpuinfo.max_freq);
 
 	ret = need_update_freq(domain, pm_qos_class, val);
-	if (ret < 0)
-		return NOTIFY_BAD;
-	if (!ret)
-		return NOTIFY_OK;
+	if (ret > 0)
+		ret = update_freq(domain, val);
 
-	if (update_freq(domain, val))
-		return NOTIFY_BAD;
-
-	return NOTIFY_OK;
+	cpufreq_cpu_put(policy);
+	return ret ? NOTIFY_BAD : NOTIFY_OK;
 }
 
 /*********************************************************************
