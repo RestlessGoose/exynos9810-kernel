@@ -19,13 +19,11 @@
  * algorithm uses the priority-list same as pm_qos.
  */
 static struct plist_head gb_list = PLIST_HEAD_INIT(gb_list);
+static int gb_value;
 
 static int gb_qos_value(void)
 {
-	if (plist_head_empty(&gb_list))
-		return 0;
-
-	return plist_last(&gb_list)->prio;
+	return READ_ONCE(gb_value);
 }
 
 static DEFINE_SPINLOCK(gb_lock);
@@ -34,11 +32,11 @@ void gb_qos_update_request(struct gb_qos_request *req, u32 new_value)
 {
 	unsigned long flags;
 
-	/* ignore if the value does not change */
-	if (req->node.prio == new_value)
-		return;
-
 	spin_lock_irqsave(&gb_lock, flags);
+
+	/* Serialize the no-change check with mutations of this request. */
+	if (req->node.prio == new_value)
+		goto out;
 
 	/*
 	 * If the request already added to the list updates the value, remove
@@ -51,9 +49,11 @@ void gb_qos_update_request(struct gb_qos_request *req, u32 new_value)
 
 	plist_node_init(&req->node, new_value);
 	plist_add(&req->node, &gb_list);
+	WRITE_ONCE(gb_value, plist_last(&gb_list)->prio);
 
 	trace_ems_global_boost(req->name, new_value);
 
+out:
 	spin_unlock_irqrestore(&gb_lock, flags);
 }
 
@@ -67,12 +67,15 @@ static ssize_t show_global_boost(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
 	struct gb_qos_request *req;
+	unsigned long flags;
 	int ret = 0;
 
 	/* show all requests as well as user level */
+	spin_lock_irqsave(&gb_lock, flags);
 	plist_for_each_entry(req, &gb_list, node)
-		ret += snprintf(buf + ret, 30, "%s : %d\n",
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret, "%s : %d\n",
 				req->name, req->node.prio);
+	spin_unlock_irqrestore(&gb_lock, flags);
 
 	return ret;
 }
