@@ -1,0 +1,247 @@
+Pragmatic/Exynos9810 temporary performance diagnostics
+===================================================
+
+Controls (root, debugfs mounted at /sys/kernel/debug):
+  /sys/kernel/debug/pragmatic_diag/enabled   0600, read/write 0 or 1
+  /sys/kernel/debug/pragmatic_diag/stats     0400, aggregated text
+  /sys/kernel/debug/pragmatic_diag/reset     0200, any write resets counters
+
+Initially disabled. No configuration/default-policy changes. Compiled only with
+CONFIG_CPU_FREQ_GOV_PRAGMATIC=y (a bool); the debugfs/storage lifetime is the
+built-in kernel lifetime, independent of policy stop/start or CPU hotplug.
+CONFIG_DEBUG_FS=n leaves diagnostics disabled and inaccessible. Partial debugfs
+creation is removed on failure. No policy/task pointers are stored in debugfs.
+The header supplies no-op hooks when Pragmatic is not built.
+
+  echo 0 > /sys/kernel/debug/pragmatic_diag/enabled
+  echo 1 > /sys/kernel/debug/pragmatic_diag/reset
+  echo 1 > /sys/kernel/debug/pragmatic_diag/enabled
+  cat /sys/kernel/debug/pragmatic_diag/stats
+  echo 0 > /sys/kernel/debug/pragmatic_diag/enabled
+  cat /sys/kernel/debug/pragmatic_diag/stats
+
+Reset while enabled fails with EBUSY. Disable first. Enabling advances an epoch;
+late completions from earlier epochs are discarded. Counters persist across
+policy stop/start and enable/disable until explicitly reset. Collection boundary
+operations can be partial: entry counters need not equal completion counters.
+Reset does not cancel requests, change governors or touch firmware state.
+
+Definitions (separate policy0/CL0 and policy4/CL1)
+------------------------------------------------
+All counters are unsigned 64-bit counts unless a unit is named. CPU attribution
+is fixed to Exynos9810 CPUs 0-3 versus 4-7, not portable topology discovery.
+
+util_callbacks: entries to pr_update, before utilization gathering.
+rate_early: callbacks rejected by pr_freq_ready before target calculation.
+commit_calculations: calculated targets reaching pr_commit.
+desired_changes: successive pr_commit inputs differ, before live QoS resolution.
+effective_changes: successive resolved pr_commit OPPs differ. First samples in
+  each enable epoch are baselines, not changes. These include rejected targets.
+duplicate_pending: same cached target rejected because work is queued/in flight.
+achieved_suppressed: same cached target already reported by policy->cur, without
+  retry or pending limits changes. This is not a hardware register read.
+rate_commit: pr_commit rejected by the existing directional/retry delay.
+  duplicate_pending, achieved_suppressed and rate_commit are exclusive exits;
+  rate_early applies before entering pr_commit.
+queued_target_updates / inflight_target_updates: an admitted changed cached
+  target replaced queued/in-flight demand, respectively. Both can apply.
+forced_updates: accepted force-cap operations plus commits with limits_changed.
+retries: admitted unchanged cached-target commits with nonzero existing retry
+  backoff (not a timer). Changed targets do not count as retries.
+reconciliation_attempts: an admitted unchanged cached target differed from cur,
+  without retry backoff or limits_changed. A possible external-change repair,
+  not proof that an external actor caused the mismatch.
+reconciled: a worker carrying that reconciliation marker returned success,
+  reported its requested frequency and changed the entry cur snapshot. Coalesced
+  requests carry the latest admitted marker. Concurrent external transitions can
+  affect these snapshots; they do not establish exclusive ownership.
+work_submissions: false->true work_in_progress followed by irq_work_queue.
+util_submissions / cap_submissions: respective pr_commit / pr_force_cap subsets
+  of work_submissions (sum equals work_submissions within stable collection).
+irq_callbacks: entries to pr_irq_work.
+queue_accepted: kthread_queue_work returned true (actual queue insertion).
+worker_executions: entries to pr_work while collection was enabled.
+worker_no_change: entry and post-driver policy->cur snapshots match.
+driver_calls: completed __cpufreq_driver_target calls from pr_work.
+driver_errors: those calls returned nonzero.
+driver_no_change: policy->cur immediately before/after those calls matches.
+request_mismatch: requested kHz differs from post-call reported policy->cur.
+requested_khz_sum / reported_khz_sum: requested and reported kHz sums over
+  driver_calls, including failed calls. Divide by driver_calls for averages.
+absolute_error_khz_sum: sum abs(requested-reported); divide by driver_calls or
+  request_mismatch as appropriate. Aggregate pairs do not retain a per-OPP map.
+watchdog_runs / boost_runs: entries to the existing CL1 delayed work functions.
+  They run on generic workqueues, not the Pragmatic kthreads. CL0 has neither.
+limits_calls: entries to the governor limits callback (may call driver outside
+  pr_work; such calls are not included in driver_calls).
+qos_callbacks: ACME callbacks with a referenced online policy, before need_update.
+qos_updates: callbacks whose need_update_freq result required update_freq.
+pe_limit_changes: Power Envelope cap changes before pm_qos_update_request, CL1.
+  A PE change need not change the aggregate QoS value or invoke the callback.
+acme_attempts / acme_errors: completed ACME scale() operations and nonzero returns.
+  These cover all origins, including other governors, limits and QoS. No-op calls
+  filtered before scale do not count. Success is the driver's reported result,
+  not independently verified silicon frequency.
+acpm_poll_requests / acpm_nonpoll_requests: CPU FREQ_REQ IPC entries with/without
+  response polling selected at entry. acpm_sleep_requests is the polling subset
+  using the existing sleep-capable API. Terminal/failed submissions also count.
+acpm_errors: nonzero IPC returns (also recorded before terminal reset/BUG).
+acpm_deadline_events: response-loop deadline-expired branches, including retries
+  and eventual success. This is not a count of failed transactions.
+acpm_poll_loops: response-loop body executions.
+acpm_udelay_calls / acpm_usleep_calls: actual udelay(10) / usleep_range(50,100)
+  invocations inside that response loop. udelay_calls * 10000 approximates the
+  explicitly requested busy-delay nanoseconds. It excludes checks, preemption,
+  MMIO, TX-full waits and all other execution; it is NOT exact consumed CPU time.
+acpm_busy_delay_ns_estimate: derived udelay_calls * 10000, with the same caveats.
+
+Timing rows
+-----------
+Each row reports count, total_ns, max_ns, histogram counts. Use total/count for
+average. Histogram boundaries are <100us, [100,500)us, [500,1000)us, [1,2)ms,
+and >=2ms. All clocks are ktime_get_ns(), monotonically increasing across CPUs;
+these elapsed times exclude system suspend and INCLUDE sleeps/preemption.
+  worker: entry to pr_work through its final work_lock unlock.
+  driver: immediately around __cpufreq_driver_target from pr_work.
+  outside: worker elapsed minus its driver elapsed, same epoch only. Includes
+    work_lock waiting and diagnostic bookkeeping; not pure algorithm CPU time.
+  dispatch: first queue timestamp for the current pending request to worker entry.
+    Coalesced target replacements preserve the first timestamp. Includes IRQ-work
+    delay and kthread scheduling delay. Work queued before enabling has no sample.
+  acme: scale entry through cpufreq_freq_transition_end, all origins.
+  acpm_poll: CPU IPC entry through response-loop completion/error.
+  acpm_nonpoll: CPU IPC API submission duration; DOES NOT measure response latency.
+
+CPU DVFS route and attribution limits
+------------------------------------
+ACME -> Exynos DM (when constraints exist) -> scale/set_freq -> cal_dfs_set_rate
+-> exynos_acpm_set_rate -> acpm_ipc_send_data -> __acpm_ipc_send_data.
+CAL selects ACPM for ACPM_VCLK_TYPE. Exynos9810's acpm_dvfs_id and DTS cal-id
+b040002/b040003 identify CPUCL0/1. Instrumentation matches only FREQ_REQ (0),
+those IDs, and the DVFS channel successfully registered by acpm_dvfs init,
+before the IPC function rewrites the command. Other clock IDs, GET requests,
+margin requests and other channels are excluded. No payloads are logged.
+
+The runtime channel polling flag, not an assumed firmware mode, selects the
+reported IPC mode. Existing channel-mode APIs have no callers in this tree;
+if an out-of-tree caller changes the mode during a request, entry classification
+may differ from the later branch. The normal CPU path calls the non-sleeping
+IPC API; whether firmware enables polling must be measured on the device.
+
+Governor driver_calls, qos_updates, pe_limit_changes and acme_attempts are
+SEPARATE overlapping layers, not exclusive ownership buckets. No task-name or
+timing heuristic attributes a transition. DM can issue several scaler calls;
+external limits may race with a worker. Do not subtract counts to assign exact
+external transitions. Exact origin/call-tree tracking would require additional
+reviewed context propagation and is deliberately deferred. Likewise cached-target
+reconciliation is observable, but its external cause is not proven by counters.
+
+Concurrency, cost and limitations
+--------------------------------
+Disabled: static-key branches, a few diagnostic-local field initializations and
+snapshot reads in slow paths; no counter updates, diagnostic clocks, new timers,
+allocations or hot-path logging. No separate Kconfig option: the false static key
+removes calls from hot utilization paths, while the existing governor bool gives
+a compile-time boundary. CONFIG_DEBUG_FS must already be enabled to use controls.
+
+Enabled: CPU-local counters protected by short local_irq_save/restore sections;
+no new spin/mutex acquisitions on scheduler or firmware paths, no cross-CPU
+counter writes, no event allocations (about 13 KiB of total counter banks on
+eight CPUs). Existing update_lock protects diagnostic cached-target fields. Clock reads occur at submissions/worker/driver/IPC edges,
+not on every utilization callback. Poll loops add local integer increments and
+branches, no per-iteration timestamps or shared locks. Control-plane mutex is
+used only by debugfs reads/writes, never by governor/driver/firmware code.
+
+Enable publishes its epoch with a release store, paired with acquire reads in
+recording helpers. Disable drains bounded writers with synchronize_sched.
+Timestamped completions validate epochs again inside the local IRQ-disabled update, preventing a late
+operation from contaminating reset/re-enable. Sleeping operations are not joined
+or cancelled by diagnostics. Offline-CPU banks remain included in sums. Writers
+are not NMI callers in these paths. Live stats are approximate, not a coherent
+multi-counter transaction; READ_ONCE(u64) is atomic on this ARM64 target. Disable
+for a stable endpoint, allowing for discarded boundary completions. Unsigned
+64-bit values wrap modulo 2^64; reset between short measurement runs. Epoch wrap
+would require a full unsigned-long cycle of enable operations.
+
+Wall elapsed can greatly exceed CPU runtime. Compare worker timing to actual
+/proc/<tid>/schedstat runtime_ns (first column), not to a claimed CPU-time counter.
+Instrumentation overhead has NOT been quantified on hardware. Perform DIAG=0
+versus DIAG=1 controls. Diagnostic reads themselves generate runnable work; avoid
+continuous polling. No firmware protocol, timeout, delay or IRQ behavior changes.
+
+Capture and disconnected screen-off measurement
+----------------------------------------------
+Push tools/pragmatic/capture.sh to /data/local/tmp; run as root:
+  sh /data/local/tmp/capture.sh 60 30 /data/local/tmp/pr-on-idle
+
+It gathers before/after stats, schedstat for both workers, cpufreq total_trans,
+time_in_state/trans_table, policy limits/governor, interrupts and available QoS
+request lists. It refuses to disturb an already-enabled collection. DIAG=0 uses
+the same snapshots without enabling/resetting diagnostics. Endpoints are not
+atomic. uptime and uptime_end bound snapshot overhead; worker schedstat units
+are runtime_ns, runnable_delay_ns and timeslices. Use actual uptime delta, not
+requested sleep alone, to compute average CPU percentage: 100*runtime_ns/delta_ns.
+A worker PID disappearing invalidates its runtime delta. Do not repeatedly read
+cpuinfo_cur_freq: ACME recalculates the clock rate by walking clock hardware.
+
+For unplugged capture (Android toybox nohup must be available):
+  adb shell su -c 'nohup sh /data/local/tmp/capture.sh 120 60 /data/local/tmp/pr-off-noadb > /data/local/tmp/pr-capture.log 2>&1 < /dev/null &'
+Disconnect USB during the 60-second settling delay. Turn the display off with
+AOD in the intended state. Reconnect after the run and pull the directory/log.
+No wakelock is taken: sleep may resume late after system suspend, which is valid
+for idle power investigation. If the ROM kills detached su children, use an
+existing root-service script facility; do not disable Android services or change
+power policy to keep the sampler alive. Distinguish screen-on interaction,
+screen-on idle, screen-off/AOD, screen-off/no-AOD and connected/disconnected ADB.
+
+Illustrative excerpt ONLY (not device measurements; remaining rows omitted):
+  enabled=1 epoch=2 dvfs_channel=5
+  units: counts kHz sums ns; elapsed is NOT CPU runtime
+  hist: <100us 100-<500us 500-<1000us 1-<2ms >=2ms
+  policy0
+    util_callbacks 12000
+    work_submissions 300
+    worker_executions 300
+    driver_calls 300
+    driver_no_change 25
+    acme_attempts 275
+    acpm_poll_requests 275
+    acpm_udelay_calls 13750
+    driver count=300 total_ns=150000000 max_ns=1500000 hist=25,100,160,15,0
+  policy4
+    worker_executions 20
+
+Validation expectations
+-----------------------
+Build the actual generated configuration, not embedded /proc/config.gz (stock
+config is intentionally embedded). Check initially enabled=0, enabled read/write,
+reset EBUSY while enabled, zero counters after disabled reset, failed writes,
+policy restart/hotplug, concurrent reads, and repeated epoch changes during DVFS.
+Compare DIAG=0/1 worker schedstat and total_trans for matched workloads. Verify
+poll requests/loops empirically; request counts alone do not prove CPU cost.
+No board runtime, suspend or firmware validation can be replaced by compilation.
+
+Local implementation validation (2026-11-01)
+------------------------------------------
+Clang 20 r547379 full vmlinux build and final incremental link passed in an
+isolated source snapshot. The seed was reconstructed from the checkout's actual
+include/config/auto.conf, with zero differences after Kconfig resolution:
+RT_GROUP_SCHED=y, SCHED_EMS=y, SCHED_TUNE=y, Pragmatic/default=y,
+POWER_ENVELOPE=y, ACPM_DVFS=y, DEBUG_FS=y and ThinLTO. No production configuration
+or build scripts were changed. Existing unrelated build warnings remain.
+
+All six affected C translation units compiled. Conditional object checks passed
+with RT_GROUP_SCHED=n, with DEBUG_FS=n, and for the ACME/ACPM/Power Envelope hooks
+with PRAGMATIC=n. These conditional checks are not full alternate-config links.
+Host tests using extracted accounting code passed histogram edges, per-CPU/cluster
+banks, disabled updates, late-epoch rejection, IPC channel/command filters and
+poll/sleep/error cases. Another source-extracted test compared 400000 commit and
+force-cap cases against pre-instrumentation HEAD with diagnostics off/on; cached
+targets, retry/limit flags, timestamps and submission decisions matched. Its
+frequency table/QoS environment was a host stub, not hardware. The capture script
+passed sh syntax and filesystem-fixture smoke checks, including cleanup, DIAG=0
+and refusing an active collector. git diff --check passed.
+
+No device was flashed or tested. Debugfs operation, hotplug/suspend behavior,
+actual polling mode, measurement overhead and performance conclusions remain
+runtime validation items. Compilation and host tests do not establish those.

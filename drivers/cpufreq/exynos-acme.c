@@ -16,6 +16,7 @@
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
 #include <linux/cpufreq.h>
+#include <linux/pragmatic_diag.h>
 #include <linux/pm_opp.h>
 #include <linux/exynos-ss.h>
 #include <linux/cpu_cooling.h>
@@ -222,6 +223,7 @@ static int scale(struct exynos_cpufreq_domain *domain,
 				 unsigned int target_freq)
 {
 	int ret;
+	struct pr_diag_stamp diag = pr_diag_begin();
 	struct cpufreq_freqs freqs = {
 		.cpu		= policy->cpu,
 		.old		= domain->old,
@@ -254,6 +256,12 @@ static int scale(struct exynos_cpufreq_domain *domain,
 				   ret < 0 ? ret : ESS_FLAG_OUT);
 	cpufreq_freq_transition_end(policy, &freqs, ret);
 
+	if (pr_diag_valid(diag)) {
+		pr_diag_time(policy->cpu, PRD_TIME_ACME, diag, ktime_get_ns() - diag.ns);
+		pr_diag_add_stamp(policy->cpu, PRD_ACME_ATTEMPTS, 1, diag);
+		if (ret)
+			pr_diag_add_stamp(policy->cpu, PRD_ACME_ERRORS, 1, diag);
+	}
 	return ret;
 }
 
@@ -594,9 +602,12 @@ static int exynos_cpufreq_pm_qos_callback(struct notifier_block *nb,
 	if (pm_qos_class == domain->pm_qos_max_class)
 		update_qos_capacity(cpumask_first(&domain->cpus), val, policy->cpuinfo.max_freq);
 
+	pr_diag_add(policy->cpu, PRD_QOS_CALLBACKS, 1);
 	ret = need_update_freq(domain, pm_qos_class, val);
-	if (ret > 0)
+	if (ret > 0) {
+		pr_diag_add(policy->cpu, PRD_QOS_UPDATES, 1);
 		ret = update_freq(domain, val);
+	}
 
 	cpufreq_cpu_put(policy);
 	return ret ? NOTIFY_BAD : NOTIFY_OK;

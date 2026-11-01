@@ -17,6 +17,7 @@
 #include <linux/init.h>
 #include <linux/irq_work.h>
 #include <linux/kernel.h>
+#include <linux/pragmatic_diag.h>
 #include <linux/kthread.h>
 #include <linux/ktime.h>
 #include <linux/math64.h>
@@ -101,6 +102,11 @@ struct pr_opp {
 };
 
 struct pragmatic_policy {
+	/* Diagnostic-only; serialized by update_lock, never exposed to debugfs. */
+	struct pr_diag_stamp diag_queued;
+	unsigned long diag_epoch;
+	unsigned int diag_desired, diag_effective;
+	bool diag_reconcile;
 	struct cpufreq_policy *policy;
 	/* Static OPP cache: no allocations or power-curve scans in sched context. */
 	struct pr_opp opps[PR_MAX_OPPS];
@@ -409,9 +415,20 @@ static void pr_force_cap(struct pragmatic_policy *pp, u32 cap)
 	raw_spin_lock_irqsave(&pp->update_lock, flags);
 	if (READ_ONCE(pp->started) &&
 	    (pp->next_freq > cap || READ_ONCE(policy->cur) > cap)) {
+		pr_diag_add(policy->cpu, PRD_FORCED_UPDATES, 1);
+		if (pr_diag_on() && pp->next_freq != cap) {
+			if (pp->work_in_progress)
+				pr_diag_add(policy->cpu, PRD_QUEUED_TARGET_UPDATES, 1);
+			if (pp->transition_in_progress)
+				pr_diag_add(policy->cpu, PRD_INFLIGHT_TARGET_UPDATES, 1);
+		}
+		pp->diag_reconcile = false;
 		pp->next_freq = cap;
 		pp->last_freq_update_time = 0;
 		if (!pp->work_in_progress) {
+			pp->diag_queued = pr_diag_begin();
+			pr_diag_add(policy->cpu, PRD_WORK_SUBMISSIONS, 1);
+			pr_diag_add(policy->cpu, PRD_CAP_SUBMISSIONS, 1);
 			pp->work_in_progress = true;
 			irq_work_queue(&pp->irq_work);
 		}
@@ -428,6 +445,7 @@ static void pr_spike_watchdog_fn(struct work_struct *work)
 	unsigned long flags;
 	u32 cap;
 
+	pr_diag_add(pp->policy->cpu, PRD_WATCHDOG_RUNS, 1);
 	if (!READ_ONCE(pp->started))
 		return;
 
@@ -454,6 +472,7 @@ static void pr_boost_workfn(struct work_struct *work)
 	u32 dt_ms, freq, cap, next_ms;
 	int cpu;
 
+	pr_diag_add(pp->policy->cpu, PRD_BOOST_RUNS, 1);
 	b->last_ns = now_ns;
 	dt_ms = min_t(u64, div_u64(diff_ns, 1000000ULL), PR_MAX_ELAPSED_MS);
 	if (!dt_ms)
@@ -766,26 +785,63 @@ static void pr_commit(struct pragmatic_policy *pp, u64 now, unsigned int next)
 	unsigned int cur = READ_ONCE(pp->policy->cur);
 	u32 delay;
 
+	pr_diag_add(pp->policy->cpu, PRD_COMMIT_CALCULATIONS, 1);
+	if (pr_diag_on()) {
+		/* Epoch changes invalidate the previous diagnostic-only sample. */
+		unsigned long epoch = pr_diag_epoch();
+		if (pp->diag_epoch == epoch && pp->diag_desired != next)
+			pr_diag_add(pp->policy->cpu, PRD_DESIRED_CHANGES, 1);
+		pp->diag_desired = next;
+		if (pp->diag_epoch != epoch)
+			pp->diag_effective = 0;
+		pp->diag_epoch = epoch;
+	}
 	next = pr_effective_freq(pp, next);
+	if (pr_diag_on()) {
+		if (pp->diag_effective && pp->diag_effective != next)
+			pr_diag_add(pp->policy->cpu, PRD_EFFECTIVE_CHANGES, 1);
+		pp->diag_effective = next;
+	}
 	delay = next > (next == pp->next_freq ? cur : pp->next_freq) ?
 		READ_ONCE(pp->up_rate_us) : READ_ONCE(pp->down_rate_us);
 	if (next == pp->next_freq) {
 		/* A queued/running request still owns this target. */
-		if (pp->work_in_progress || pp->transition_in_progress)
+		if (pp->work_in_progress || pp->transition_in_progress) {
+			pr_diag_add(pp->policy->cpu, PRD_DUPLICATE_PENDING, 1);
 			return;
-		if (next == cur && !pp->retry_delay_us && !pp->limits_changed)
+		}
+		if (next == cur && !pp->retry_delay_us && !pp->limits_changed) {
+			pr_diag_add(pp->policy->cpu, PRD_ACHIEVED_SUPPRESSED, 1);
 			return;
+		}
 		delay = max(delay, pp->retry_delay_us);
 	}
-	if (!pp->limits_changed && elapsed < (u64)delay * NSEC_PER_USEC)
+	if (!pp->limits_changed && elapsed < (u64)delay * NSEC_PER_USEC) {
+		pr_diag_add(pp->policy->cpu, PRD_RATE_COMMIT, 1);
 		return;
+	}
 
+	if (pp->limits_changed)
+		pr_diag_add(pp->policy->cpu, PRD_FORCED_UPDATES, 1);
+	if (pp->retry_delay_us && next == pp->next_freq)
+		pr_diag_add(pp->policy->cpu, PRD_RETRIES, 1);
+	pp->diag_reconcile = next == pp->next_freq && next != cur &&
+		!pp->retry_delay_us && !pp->limits_changed;
+	if (pp->diag_reconcile)
+		pr_diag_add(pp->policy->cpu, PRD_RECONCILIATION_ATTEMPTS, 1);
+	if (next != pp->next_freq && pp->work_in_progress)
+		pr_diag_add(pp->policy->cpu, PRD_QUEUED_TARGET_UPDATES, 1);
+	if (next != pp->next_freq && pp->transition_in_progress)
+		pr_diag_add(pp->policy->cpu, PRD_INFLIGHT_TARGET_UPDATES, 1);
 	pp->limits_changed = false;
 	if (next != pp->next_freq)
 		pp->retry_delay_us = 0;
 	pp->next_freq = next;
 	pp->last_freq_update_time = now;
 	if (!pp->work_in_progress) {
+		pp->diag_queued = pr_diag_begin();
+		pr_diag_add(pp->policy->cpu, PRD_WORK_SUBMISSIONS, 1);
+		pr_diag_add(pp->policy->cpu, PRD_UTIL_SUBMISSIONS, 1);
 		pp->work_in_progress = true;
 		irq_work_queue(&pp->irq_work);
 	}
@@ -799,6 +855,7 @@ static void pr_update(struct update_util_data *hook, u64 now, unsigned int flags
 	unsigned long util, max;
 	unsigned int next;
 
+	pr_diag_add(pp->policy->cpu, PRD_UTIL_CALLBACKS, 1);
 	pr_get_util(&util, &max, now);
 	raw_spin_lock(&pp->update_lock);
 	pc->util = util;
@@ -809,6 +866,8 @@ static void pr_update(struct update_util_data *hook, u64 now, unsigned int flags
 	if (pr_freq_ready(pp, now)) {
 		next = pr_shared_freq(pp, now);
 		pr_commit(pp, now, next);
+	} else {
+		pr_diag_add(pp->policy->cpu, PRD_RATE_EARLY, 1);
 	}
 	raw_spin_unlock(&pp->update_lock);
 }
@@ -820,9 +879,21 @@ static void pr_work(struct kthread_work *work)
 	unsigned int freq;
 	unsigned long flags;
 	int ret;
+	struct pr_diag_stamp wall = pr_diag_begin(), driver, queued;
+	u64 driver_ns = 0;
+	unsigned int before = READ_ONCE(pp->policy->cur), driver_before, after;
+	bool reconcile;
+
+	pr_diag_add_stamp(pp->policy->cpu, PRD_WORKER_EXECUTIONS, 1, wall);
 
 	raw_spin_lock_irqsave(&pp->update_lock, flags);
 	freq = pp->next_freq;
+	queued = pp->diag_queued;
+	reconcile = pp->diag_reconcile && wall.epoch == queued.epoch;
+	if (wall.epoch == queued.epoch && wall.ns >= queued.ns &&
+	    pr_diag_valid(queued))
+		pr_diag_time(pp->policy->cpu, PRD_TIME_DISPATCH, queued,
+			     wall.ns - queued.ns);
 	pp->transition_in_progress = true;
 	pp->work_in_progress = false;
 	raw_spin_unlock_irqrestore(&pp->update_lock, flags);
@@ -837,7 +908,29 @@ static void pr_work(struct kthread_work *work)
 	/* We must arm the one-shot timer after the driver has completed its
 	 * transition, not merely when the scheduler requests 2314 MHz.
 	 */
+	driver_before = READ_ONCE(pp->policy->cur);
+	driver = pr_diag_begin();
 	ret = __cpufreq_driver_target(pp->policy, freq, CPUFREQ_RELATION_L);
+	after = READ_ONCE(pp->policy->cur);
+	if (pr_diag_valid(driver)) {
+		driver_ns = ktime_get_ns() - driver.ns;
+		pr_diag_time(pp->policy->cpu, PRD_TIME_DRIVER, driver, driver_ns);
+		pr_diag_add_stamp(pp->policy->cpu, PRD_DRIVER_CALLS, 1, driver);
+		pr_diag_add_stamp(pp->policy->cpu, PRD_REQUESTED_KHZ_SUM, freq, driver);
+		pr_diag_add_stamp(pp->policy->cpu, PRD_REPORTED_KHZ_SUM, after, driver);
+		if (after == driver_before)
+			pr_diag_add_stamp(pp->policy->cpu, PRD_DRIVER_NO_CHANGE, 1, driver);
+		if (freq != after) {
+			pr_diag_add_stamp(pp->policy->cpu, PRD_REQUEST_MISMATCH, 1, driver);
+			pr_diag_add_stamp(pp->policy->cpu, PRD_ABSOLUTE_ERROR_KHZ_SUM,
+					  freq > after ? freq - after : after - freq, driver);
+		}
+		if (ret) {
+			pr_diag_add_stamp(pp->policy->cpu, PRD_DRIVER_ERRORS, 1, driver);
+		} else if (reconcile && after == freq && before != after) {
+			pr_diag_add_stamp(pp->policy->cpu, PRD_RECONCILED, 1, driver);
+		}
+	}
 	if (pp->cl1 && READ_ONCE(pp->started)) {
 		struct pr_boost_state *b = &pp->boost;
 		if (READ_ONCE(pp->policy->cur) > b->cfg.stages_khz[1])
@@ -860,13 +953,26 @@ static void pr_work(struct kthread_work *work)
 	}
 	raw_spin_unlock_irqrestore(&pp->update_lock, flags);
 	mutex_unlock(&pp->work_lock);
+	if (pr_diag_valid(wall)) {
+		u64 ns = ktime_get_ns() - wall.ns;
+		pr_diag_time(pp->policy->cpu, PRD_TIME_WORKER, wall, ns);
+		if (driver.epoch == wall.epoch && ns >= driver_ns)
+			pr_diag_time(pp->policy->cpu, PRD_TIME_OUTSIDE, wall, ns - driver_ns);
+		if (before == after)
+			pr_diag_add_stamp(pp->policy->cpu, PRD_WORKER_NO_CHANGE, 1, wall);
+	}
 }
 
 static void pr_irq_work(struct irq_work *work)
 {
 	struct pragmatic_policy *pp = container_of(work,
 						  struct pragmatic_policy, irq_work);
-	kthread_queue_work(&pp->worker, &pp->work);
+	bool accepted;
+
+	pr_diag_add(pp->policy->cpu, PRD_IRQ_CALLBACKS, 1);
+	accepted = kthread_queue_work(&pp->worker, &pp->work);
+	if (accepted)
+		pr_diag_add(pp->policy->cpu, PRD_QUEUE_ACCEPTED, 1);
 }
 
 static int pr_init(struct cpufreq_policy *policy)
@@ -990,6 +1096,7 @@ static void pr_limits(struct cpufreq_policy *policy)
 	struct pragmatic_policy *pp = policy->governor_data;
 	unsigned long flags;
 
+	pr_diag_add(policy->cpu, PRD_LIMITS_CALLS, 1);
 	mutex_lock(&pp->work_lock);
 	cpufreq_policy_apply_limits(policy);
 	mutex_unlock(&pp->work_lock);

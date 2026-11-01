@@ -4,6 +4,7 @@
 #include <linux/cpufreq.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/pragmatic_diag.h>
 #include <linux/math64.h>
 #include <linux/of.h>
 #include <linux/pm_qos.h>
@@ -170,6 +171,7 @@ static void pe_workfn(struct work_struct *work)
 	cap = pe_budget_limit(cap, sum_util, peak_util);
 
 	if (cap != pe_limit_khz) {
+		pr_diag_add(4, PRD_PE_LIMIT_CHANGES, 1);
 		pm_qos_update_request(&pe_max_qos_req, cap);
 		pe_limit_khz = cap;
 	}
