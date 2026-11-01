@@ -18,6 +18,7 @@
 #include <linux/irq_work.h>
 #include <linux/kernel.h>
 #include <linux/pragmatic_diag.h>
+#include <linux/pragmatic_profile.h>
 #include <linux/kthread.h>
 #include <linux/ktime.h>
 #include <linux/math64.h>
@@ -29,6 +30,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/workqueue.h>
+#include <linux/timer.h>
 #include <trace/events/power.h>
 
 #include "sched.h"
@@ -108,6 +110,12 @@ struct pragmatic_policy {
 	unsigned int diag_desired, diag_effective;
 	bool diag_reconcile;
 	struct cpufreq_policy *policy;
+	/* Protected by update_lock; one-shot producer drained before work. */
+	struct timer_list profile_timer;
+	u64 profile_state, profile_release_generation;
+	unsigned long profile_deadline;
+	unsigned int profile_target, profile_util_pct;
+	bool profile_pending, profile_urgent, profile_releasing;
 	/* Static OPP cache: no allocations or power-curve scans in sched context. */
 	struct pr_opp opps[PR_MAX_OPPS];
 	u32 opp_count;
@@ -352,7 +360,8 @@ static void pr_update_debt(struct pr_boost_state *b, u32 freq,
 }
 
 static void pr_update_credit(struct pr_boost_state *b, u32 freq,
-			     unsigned long total, unsigned long peak, u32 dt_ms)
+			     unsigned long total, unsigned long peak, u32 dt_ms,
+			     unsigned int recharge_pct)
 {
 	const struct pr_boost_config *c = &b->cfg;
 	u32 actual = cl1_estimated_power_mw(freq, total, peak, c->shared_pct);
@@ -361,6 +370,8 @@ static void pr_update_credit(struct pr_boost_state *b, u32 freq,
 	u64 excess = actual > reference ? (u64)(actual - reference) * dt_ms : 0;
 	u64 refill = (u64)c->turbo_recharge_mw * dt_ms;
 
+	if (recharge_pct != 100)
+		refill = div64_u64(refill * recharge_pct, 100);
 	if (excess) {
 		b->turbo_credit_uj = excess >= b->turbo_credit_uj ? 0 :
 					b->turbo_credit_uj - excess;
@@ -405,6 +416,26 @@ static unsigned int pr_effective_freq(struct pragmatic_policy *pp,
  * before the last runnable task goes idle: time-in-state can otherwise grow
  * at 2314 MHz while the deferrable periodic sampler is asleep.
  */
+/* update_lock held. Never waits for a running delayed callback. */
+static void pr_cancel_deferred(struct pragmatic_policy *pp)
+{
+	if (pp->profile_pending) {
+		pp->profile_pending = false;
+		pr_diag_add(pp->policy->cpu, PRD_DEFERRED_CANCELED, 1);
+		del_timer(&pp->profile_timer);
+	}
+}
+
+static u64 pr_sync_profile(struct pragmatic_policy *pp)
+{
+	u64 state = pr_profile_read();
+
+	if (pr_profile_generation(state) != pr_profile_generation(pp->profile_state))
+		pr_cancel_deferred(pp);
+	pp->profile_state = state;
+	return state;
+}
+
 static void pr_force_cap(struct pragmatic_policy *pp, u32 cap)
 {
 	struct cpufreq_policy *policy = pp->policy;
@@ -413,8 +444,11 @@ static void pr_force_cap(struct pragmatic_policy *pp, u32 cap)
 	/* QoS or another actor may raise policy->min above our soft cap. */
 	cap = pr_effective_freq(pp, max(cap, READ_ONCE(policy->min)));
 	raw_spin_lock_irqsave(&pp->update_lock, flags);
+	if (pp->profile_pending && pp->profile_target > cap)
+		pr_cancel_deferred(pp);
 	if (READ_ONCE(pp->started) &&
 	    (pp->next_freq > cap || READ_ONCE(policy->cur) > cap)) {
+		pr_cancel_deferred(pp);
 		pr_diag_add(policy->cpu, PRD_FORCED_UPDATES, 1);
 		if (pr_diag_on() && pp->next_freq != cap) {
 			if (pp->work_in_progress)
@@ -471,6 +505,7 @@ static void pr_boost_workfn(struct work_struct *work)
 	unsigned long peak = 0, total = 0, flags;
 	u32 dt_ms, freq, cap, next_ms;
 	int cpu;
+	const struct pr_profile_policy *profile;
 
 	pr_diag_add(pp->policy->cpu, PRD_BOOST_RUNS, 1);
 	b->last_ns = now_ns;
@@ -495,10 +530,11 @@ static void pr_boost_workfn(struct work_struct *work)
 	 * work can legitimately sleep much longer than its configured delay.
 	 * Never attribute an extended interval to a stale active sample.
 	 */
+	profile = pr_profile_policy(pr_profile_read());
 	pr_update_credit(b, freq, total, peak,
 			 total ? dt_ms : min_t(u64,
 						   div_u64(diff_ns, 1000000ULL),
-						   1000ULL));
+						   1000ULL), profile->recharge_pct);
 
 	cap = min(b->cfg.stages_khz[b->stage],
 		  b->cfg.temp_ceiling_khz[b->temp_state]);
@@ -733,6 +769,13 @@ static unsigned int pr_shared_freq(struct pragmatic_policy *pp, u64 now)
 	struct cpufreq_policy *policy = pp->policy;
 	unsigned long util = 0, max = 1;
 	unsigned int cpu;
+	bool filtering = pr_effective_id(pp->profile_state) != PR_OPTIMAL;
+
+	/* Optimal does not need an extra utilization division. If the global
+	 * profile changes mid-calculation, bypass filtering conservatively.
+	 */
+	pp->profile_urgent = !filtering;
+	pp->profile_util_pct = 100;
 
 	for_each_cpu(cpu, policy->cpus) {
 		struct pragmatic_cpu *pc = &per_cpu(pragmatic_cpu, cpu);
@@ -743,6 +786,9 @@ static unsigned int pr_shared_freq(struct pragmatic_policy *pp, u64 now)
 			pc->iowait_pending = false;
 			continue;
 		}
+		if (filtering && ((pc->flags & (SCHED_CPUFREQ_RT_DL |
+					 SCHED_CPUFREQ_IOWAIT)) || pc->iowait_boost))
+			pp->profile_urgent = true;
 		if (pc->flags & SCHED_CPUFREQ_DL)
 			return pp->cl1 ? min(policy->cpuinfo.max_freq,
 						 READ_ONCE(pp->boost.cap_khz)) :
@@ -755,6 +801,8 @@ static unsigned int pr_shared_freq(struct pragmatic_policy *pp, u64 now)
 		}
 		pr_iowait_apply(pc, &util, &max);
 	}
+	if (filtering)
+		pp->profile_util_pct = div64_u64((u64)util * 100, max);
 	return pr_select_freq(pp, util, max);
 }
 
@@ -779,12 +827,67 @@ static unsigned int pr_effective_freq(struct pragmatic_policy *pp,
 	return index < 0 ? next : pp->policy->freq_table[index].frequency;
 }
 
-static void pr_commit(struct pragmatic_policy *pp, u64 now, unsigned int next)
+/* Eligibility only: QoS floors, safety changes, RT/DL/IOWAIT, large jumps
+ * and cached-target reconciliation must never wait for profile hysteresis.
+ */
+static bool pr_minor_up(struct pragmatic_policy *pp, unsigned int next,
+			unsigned int cur, const struct pr_profile_policy *profile)
+{
+	struct cpufreq_frequency_table *pos;
+	unsigned int steps = 0;
+	int floor;
+
+	if (!profile->hold_us || pp->profile_releasing || next <= cur ||
+	    next <= pp->next_freq || pp->limits_changed || pp->retry_delay_us ||
+	    pp->profile_urgent || pp->profile_util_pct >= profile->urgent_pct ||
+	    cur < READ_ONCE(pp->policy->min) || !pp->policy->freq_table)
+		return false;
+	floor = pm_qos_request(pp->cl1 ? PM_QOS_CLUSTER1_FREQ_MIN :
+				       PM_QOS_CLUSTER0_FREQ_MIN);
+	if (floor > 0 && cur < (unsigned int)floor)
+		return false;
+	cpufreq_for_each_valid_entry(pos, pp->policy->freq_table) {
+		if (pos->frequency > cur && pos->frequency <= next &&
+		    ++steps > profile->small_up_steps)
+			return false;
+	}
+	return steps != 0;
+}
+
+/* Called only once the existing rate limiter would admit the request. */
+static bool pr_defer_up(struct pragmatic_policy *pp, unsigned int next,
+			const struct pr_profile_policy *profile)
+{
+	if (pp->profile_pending && time_after_eq(jiffies, pp->profile_deadline)) {
+		pp->profile_pending = false;
+		del_timer(&pp->profile_timer);
+		pr_diag_add(pp->policy->cpu, PRD_DEFERRED_EXECUTED, 1);
+		return false;
+	}
+	pp->profile_target = next;
+	if (!pp->profile_pending) {
+		unsigned long delay = max(1UL, usecs_to_jiffies(profile->hold_us));
+
+		pp->profile_pending = true;
+		pp->profile_deadline = jiffies + delay;
+		mod_timer(&pp->profile_timer, pp->profile_deadline);
+		pr_diag_add(pp->policy->cpu, PRD_DEFERRED_ARMED, 1);
+	}
+	pr_diag_add(pp->policy->cpu, PRD_UP_DEFERRED, 1);
+	return true;
+}
+
+static bool pr_commit(struct pragmatic_policy *pp, u64 now, unsigned int next)
 {
 	u64 elapsed = now - pp->last_freq_update_time;
 	unsigned int cur = READ_ONCE(pp->policy->cur);
 	u32 delay;
+	const struct pr_profile_policy *profile = pr_profile_policy(pr_sync_profile(pp));
+	bool minor, released = false;
 
+	if (pp->profile_releasing && pr_profile_generation(pp->profile_state) !=
+	    pp->profile_release_generation)
+		return false;
 	pr_diag_add(pp->policy->cpu, PRD_COMMIT_CALCULATIONS, 1);
 	if (pr_diag_on()) {
 		/* Epoch changes invalidate the previous diagnostic-only sample. */
@@ -802,25 +905,39 @@ static void pr_commit(struct pragmatic_policy *pp, u64 now, unsigned int next)
 			pr_diag_add(pp->policy->cpu, PRD_EFFECTIVE_CHANGES, 1);
 		pp->diag_effective = next;
 	}
+	minor = pr_minor_up(pp, next, cur, profile);
+	if (!minor)
+		pr_cancel_deferred(pp);
 	delay = next > (next == pp->next_freq ? cur : pp->next_freq) ?
 		READ_ONCE(pp->up_rate_us) : READ_ONCE(pp->down_rate_us);
 	if (next == pp->next_freq) {
 		/* A queued/running request still owns this target. */
 		if (pp->work_in_progress || pp->transition_in_progress) {
 			pr_diag_add(pp->policy->cpu, PRD_DUPLICATE_PENDING, 1);
-			return;
+			return false;
 		}
 		if (next == cur && !pp->retry_delay_us && !pp->limits_changed) {
 			pr_diag_add(pp->policy->cpu, PRD_ACHIEVED_SUPPRESSED, 1);
-			return;
+			return false;
 		}
 		delay = max(delay, pp->retry_delay_us);
 	}
 	if (!pp->limits_changed && elapsed < (u64)delay * NSEC_PER_USEC) {
 		pr_diag_add(pp->policy->cpu, PRD_RATE_COMMIT, 1);
-		return;
+		return false;
 	}
 
+	if (minor) {
+		if (pr_defer_up(pp, next, profile))
+			return false;
+		released = true;
+	}
+	if (next > cur && !released && !pp->profile_releasing)
+		pr_diag_add(pp->policy->cpu, PRD_UP_IMMEDIATE, 1);
+	else if (next < cur)
+		pr_diag_add(pp->policy->cpu, PRD_DOWN_REQUESTS, 1);
+	if (pp->profile_releasing)
+		pr_diag_add(pp->policy->cpu, PRD_DEFERRED_EXECUTED, 1);
 	if (pp->limits_changed)
 		pr_diag_add(pp->policy->cpu, PRD_FORCED_UPDATES, 1);
 	if (pp->retry_delay_us && next == pp->next_freq)
@@ -845,6 +962,43 @@ static void pr_commit(struct pragmatic_policy *pp, u64 now, unsigned int next)
 		pp->work_in_progress = true;
 		irq_work_queue(&pp->irq_work);
 	}
+	return true;
+}
+
+static void pr_profile_timer_fn(unsigned long data)
+{
+	struct pragmatic_policy *pp = (struct pragmatic_policy *)data;
+	unsigned long flags;
+	unsigned int cpu;
+	bool busy = false;
+
+	/* Timer context does not add a runnable worker. Do not resurrect a
+	 * wholly idle policy; a later wakeup follows the normal callback.
+	 */
+	for_each_cpu(cpu, pp->policy->cpus) {
+		if (READ_ONCE(cpu_rq(cpu)->nr_running))
+			busy = true;
+	}
+	raw_spin_lock_irqsave(&pp->update_lock, flags);
+	pr_sync_profile(pp);
+	/* An older invocation can overlap rearming for a newer request. */
+	if (pp->profile_pending && time_before(jiffies, pp->profile_deadline)) {
+		raw_spin_unlock_irqrestore(&pp->update_lock, flags);
+		return;
+	}
+	if (READ_ONCE(pp->started) && pp->profile_pending && busy) {
+		unsigned int target = pp->profile_target;
+
+		pp->profile_pending = false;
+		pp->profile_releasing = true;
+		pp->profile_release_generation = pr_profile_generation(pp->profile_state);
+		if (!pr_commit(pp, local_clock(), target))
+			pr_diag_add(pp->policy->cpu, PRD_DEFERRED_CANCELED, 1);
+		pp->profile_releasing = false;
+	} else {
+		pr_cancel_deferred(pp);
+	}
+	raw_spin_unlock_irqrestore(&pp->update_lock, flags);
 }
 
 static void pr_update(struct update_util_data *hook, u64 now, unsigned int flags)
@@ -858,6 +1012,7 @@ static void pr_update(struct update_util_data *hook, u64 now, unsigned int flags
 	pr_diag_add(pp->policy->cpu, PRD_UTIL_CALLBACKS, 1);
 	pr_get_util(&util, &max, now);
 	raw_spin_lock(&pp->update_lock);
+	pr_sync_profile(pp);
 	pc->util = util;
 	pc->max = max;
 	pc->flags = flags;
@@ -995,6 +1150,7 @@ static int pr_init(struct cpufreq_policy *policy)
 	kthread_init_work(&pp->work, pr_work);
 	kthread_init_worker(&pp->worker);
 	init_irq_work(&pp->irq_work, pr_irq_work);
+	setup_timer(&pp->profile_timer, pr_profile_timer_fn, (unsigned long)pp);
 	if (pp->cl1) {
 		pr_boost_init(pp);
 		pr_cache_opps(pp);
@@ -1039,6 +1195,9 @@ static int pr_start(struct cpufreq_policy *policy)
 	struct pragmatic_policy *pp = policy->governor_data;
 	unsigned int cpu;
 
+	pp->profile_pending = false;
+	pp->profile_releasing = false;
+	pp->profile_state = pr_profile_read();
 	pp->work_in_progress = false;
 	pp->transition_in_progress = false;
 	pp->retry_delay_us = 0;
@@ -1073,10 +1232,13 @@ static void pr_stop(struct cpufreq_policy *policy)
 	/* Serialize admission by delayed cap producers with shutdown. */
 	raw_spin_lock_irqsave(&pp->update_lock, flags);
 	WRITE_ONCE(pp->started, false);
+	pr_cancel_deferred(pp);
 	raw_spin_unlock_irqrestore(&pp->update_lock, flags);
 	for_each_cpu(cpu, policy->cpus)
 		cpufreq_remove_update_util_hook(cpu);
 	synchronize_sched();
+	/* This producer may enqueue IRQ/kthread work: join it first. */
+	del_timer_sync(&pp->profile_timer);
 	if (pp->cl1) {
 		cancel_delayed_work_sync(&pp->boost.work);
 		cancel_delayed_work_sync(&pp->boost.spike_watchdog);
@@ -1102,6 +1264,7 @@ static void pr_limits(struct cpufreq_policy *policy)
 	mutex_unlock(&pp->work_lock);
 	raw_spin_lock_irqsave(&pp->update_lock, flags);
 	pp->limits_changed = true;
+	pr_cancel_deferred(pp);
 	raw_spin_unlock_irqrestore(&pp->update_lock, flags);
 }
 

@@ -216,6 +216,10 @@ struct panel_work {
 };
 
 struct panel_device {
+#ifdef CONFIG_CPU_FREQ_GOV_PRAGMATIC
+	unsigned int pragmatic_state;
+	bool pragmatic_state_ready;
+#endif
 	int id;
 	int dsi_id;
 
