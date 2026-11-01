@@ -1,0 +1,243 @@
+CrownTrail per-runqueue PELT multiplier cutover
+=============================================
+
+Scope and interface
+-------------------
+This extends the foundation commits 571b6c7a44bd and 6df69e3ff800. It changes
+manual runtime switching only. Default remains 2x. There is no panel/profile
+integration, periodic work, second PELT clock, new sysfs control or new policy.
+
+Existing control:
+  /proc/sys/kernel/sched_pelt_multiplier   accepts 1, 2, 4; default 2
+
+A successful WRITE completes the cutover for every possible runqueue before
+returning. The scalar sysctl and sched_pelt_lshift record the LAST COMPLETED
+setting; while a write is running, they do not describe an atomic simultaneous
+setting of all CPUs. A second writer cannot start until the first completes.
+Lockless scalar status readers can still see the previous completed setting
+while individual queues are changing. No caller may use that scalar to
+interpret a runqueue's accumulated historical time.
+
+Mechanism and individual boundaries
+-----------------------------------
+struct rq owns pelt_lshift, initialized for ALL possible CPUs in sched_init().
+Only boot initialization and the locked cutover write it. update_rq_clock_task()
+uses this local field while holding the existing rq lock, never a new global
+shift. Each effective nonnegative task-clock increment D advances:
+  clock_task      += D
+  clock_task_mult += D << rq->pelt_lshift
+No accumulated timestamp, load average, throttle offset or band sample is
+rescaled or reset.
+
+The existing sysctl mutex serializes parsing, validation and the full change.
+The foundation's private candidate remains private until validation succeeds.
+A write of the already completed setting is a no-op, including clock sampling.
+For a different accepted setting:
+  1. get_online_cpus() pins hotplug state.
+  2. For EACH POSSIBLE CPU, including offline/never-online ones:
+       lock that rq with IRQs saved;
+       run the existing clock-update body without its skip optimization;
+       change that rq's pelt_lshift;
+       unlock and restore IRQs.
+  3. Publish the two existing global completed-setting scalars.
+  4. put_online_cpus(); return through the original sysctl handler.
+
+The sampled sched_clock_cpu(cpu) boundary is INDIVIDUAL for each queue. This is
+not stop-machine and does not promise a common physical instant. There can be
+a short mixed-slope interval while the loop progresses. Each queue is internally
+consistent: every pending positive clock delta is settled under its OWN old
+shift before any new delta can use its new shift. Normal updates can occur
+between visits to different CPUs, but cannot interleave within one queue's
+locked settlement/adoption.
+
+Generation tracking is unnecessary in this design: there is no asynchronous
+request, deferred adoption or online-only acknowledgment to go stale. The
+serialized synchronous loop directly acknowledges all possible queues. A new
+writer cannot supersede an incomplete request. The retained global shift is
+completion/initialization state, not a clock-accounting publication mechanism.
+
+Why remote sampling is valid here
+--------------------------------
+kernel/sched/clock.c documents sched_clock_cpu(i) as callable remotely with IRQs
+disabled, with monotonicity per CPU. No timestamps from DIFFERENT CPUs are
+subtracted by this cutover. The active ARM64 configuration does not select
+HAVE_UNSTABLE_SCHED_CLOCK: sched_clock_cpu(i) reads the architecture's globally
+synchronized sched_clock(). The arch timer registers the counter in
+ drivers/clocksource/arm_arch_timer.c.
+The generic unstable-clock branch also supports remote reads and couples its
+clock data using cmpxchg; it does not execute work on the remote CPU. That
+branch has conditional compilation coverage, not device validation here.
+
+update_rq_clock() retains its normal RQCF_ACT_SKIP behavior. The cutover alone
+calls its factored, unconditional body. It does NOT clear or alter skip flags.
+Thus stale/skipped history cannot escape into a later new-shift update.
+The original negative-delta clamp is unchanged: an already accounted rq->clock
+is never rewound. If a sampled clock is behind it, there is no positive pending
+delta to settle; the new slope applies to future positive increments beyond
+the already accounted boundary. No elapsed history is reinterpreted.
+
+Idle, offline, initialization and hotplug
+---------------------------------------
+All possible queues and their locks are initialized before userspace can write
+the sysctl. Offline queue storage remains allocated. The stable ARM64 clock
+and per-CPU IRQ-accounting counters can be read without waking the CPU.
+
+The loop includes offline and never-online queues rather than merely storing
+a desired value for their next wakeup. Their old pending interval is settled
+now, and subsequent wakeup uses the new slope. Idle/offline elapsed time is
+handled as the existing lazy rq task-clock model handles it; this is not a
+new clock that excludes idle/offline time or resets utilization on return.
+
+get_online_cpus prevents CPU-up/down concurrently with the loop. The scheduler's
+hotplug start helper resets age_stamp, NOT clock/clock_task/clock_task_mult or
+pelt_lshift. On return to service, each CPU retains its settled piecewise clock
+and local shift. No new hotplug callback or request replay is needed.
+Without HOTPLUG_CPU the existing get/put APIs are compile-time stubs.
+
+CFS, RT, migration, throttling and EMS
+------------------------------------
+CFS and RT consumers already accept deltas of the accumulated multiplied rq
+clock. The continuous piecewise sum supplies their intended virtual elapsed
+time; it does not require updating every entity at a boundary. The recurrence,
+quantization and load/utilization history remain unchanged. Blocked history is
+decayed lazily as before; running/blocked weight changes retain their existing
+accounting sites.
+
+CFS throttle start and accumulated exclusions are expressed in that SAME
+multiplied clock. A throttled interval spanning several slopes is removed by
+subtracting its piecewise-integrated start/end difference. Nested throttling
+still freezes at the first throttle and accumulates only on final unthrottle.
+The foundation's parallel unmultiplied exclusions and paired band samples
+remain untouched, so the band age never divides history by today's shift.
+
+Existing migration serialization still protects source/destination runqueues.
+The cutover holds only ONE rq lock and never waits for a second. A migration
+holding both locks therefore cannot observe a torn clock/shift pair on either
+queue. Between individual cutovers the two queues can have different slopes;
+PELT origins were already per-runqueue. Existing attachment/rebasing rules
+preserve numeric utilization and move timestamps to the destination origin;
+no new cross-origin subtraction or history conversion is introduced. The
+foundation retains domain/version checks and invalid-origin handling for band
+readers, which do not acquire the control mutex or hotplug lock.
+
+IRQ and steal accounting
+------------------------
+The original update_rq_clock_task body, including prev_irq_time,
+prev_steal_time_rq, clamping/carrying excess non-task time, static-key checks
+and NONTASK_CAPACITY updates, is unchanged apart from choosing the locked local
+shift. The effective task delta after those deductions is multiplied using the
+old shift during settlement. Do not mistake this for instruction-accurate IRQ
+attribution: 4.9 already documents deferred irq-exit reporting/misattribution;
+this change preserves that existing counter-based approximation, including
+carried debt. It does not invent counter timestamps or retroactively redistribute
+unreported IRQ time across the boundary.
+
+Native Exynos has IRQ_TIME_ACCOUNTING=n and PARAVIRT_TIME_ACCOUNTING=n. Enabled
+branches have object/host coverage. This tree's ARM64 paravirt static key starts
+false; no live hypervisor/provider behavior is validated. An external provider
+must continue to honor the existing per-CPU steal-clock read contract.
+
+Lock order, bounded work and completion
+--------------------------------------
+  private sysctl mutex -> hotplug read exclusion -> one rq lock
+There are no other callers of the private setter and no hotplug callback takes
+this mutex. The setter acquires no pi, domain, CFS-bandwidth, metadata, governor
+or driver lock. The factored clock body only samples the clock, performs the
+existing non-task deductions, and updates clock/RT-capacity bookkeeping.
+Metadata locks are not taken. There is no cross-CPU call, callback flush or
+synchronous IPI under any rq lock. Migration's two-rq order is not reversed.
+
+Work is O(number of possible CPUs), eight here. IRQs are disabled only while
+one queue is locked and sampled, not across the loop. Lock contention, hotplug
+writers and the underlying clock implementation can delay a syscall; this is
+not a hard wall-time bound. No task/group tree walks or new retry loops exist.
+There is no new hot-path test, allocation, timer or worker. The constant-setting
+hot path replaces a global shift load with an rq-local load.
+
+Parsing errors/invalid values return BEFORE mutation and retain the previous
+configuration. After the first queue changes, no operation is fallible,
+interruptible or asynchronously cancelable: get_online_cpus and the private
+mutex have already been acquired; rq locks and clock reads have no error return.
+Thus there is no partially applied recoverable request that could falsely return
+success or need rollback. If a CPU/lock/clock read hangs, the syscall does not
+report completion. Hardware/kernel failure mid-loop is not a recoverable error
+policy. No fabricated acknowledgment, timeout or unsafe rollback is added.
+
+Validation and its limits
+-------------------------
+Full Clang 20.0.0 r547379 ThinLTO make -j6 vmlinux, including FIPS post-link: PASS.
+Built in an isolated source tree using the actual generated configuration,
+with ZERO resolved option differences. Compiled source files matched the final
+working production files. Root config, build scripts and unrelated sources
+were not changed. SMP, FAIR_GROUP_SCHED, CFS_BANDWIDTH, RT_GROUP_SCHED,
+SCHED_EMS, schedtune, Power Envelope and Pragmatic remain enabled.
+
+Focused object compilation using private generated-config overlays: PASS for
+EMS=n, CFS_BANDWIDTH=n, RT_GROUP_SCHED=n, HOTPLUG_CPU=n, IRQ accounting=y,
+steal accounting=y, IRQ+steal=y and unstable sched-clock=y. Relevant cputime and
+clock implementation objects were compiled too. These are not linked variant
+kernels or proof of those configurations on hardware. The foundation's known
+unrelated no-fair-group core/RT conditional mismatch is not changed.
+
+git diff --check: PASS.
+Run:
+  python3 tools/pragmatic/test_pelt_sysctl.py
+  python3 tools/pragmatic/test_pelt_cutover.py
+  python3 tools/pragmatic/test_band_age.py
+  python3 tools/pragmatic/test_profiles.py
+
+Cutover tests extract the real handler, setter, clock body and throttle helpers.
+For EACH of native, IRQ, steal and combined variants they cover:
+* 10000 piecewise transitions among 1x/2x/4x, independently settled boundaries,
+  suppressed clocks, offline/never-online queues and carried IRQ/steal debt;
+* no-op writes, invalid values, parser failure after a private candidate write,
+  subsequent recovery, long idle,
+  backwards-clock clamping, monotonic and weighted advancement;
+* nested throttle intervals spanning several slopes and no band-age advance
+  from a shift change alone;
+* 300000 old/new constant-slope task-clock updates with identical numeric state;
+* normal clock accounting after a local boundary while global completion
+  still reports the old setting (a deterministic mixed-boundary interleaving);
+* 12000 concurrent sysctl requests with moving mock clocks, normal rq updates,
+  per-settlement reference checks, hotplug read/write exclusion and paired-rq
+  lock stress.
+A separate test feeds the real CFS/RT PELT recurrences from the actual cutover
+clock for 100000 runnable/blocked updates with nested throttling, checked against
+independently integrated clocks. Capacity inputs and the unchanged EMS callback
+are stubbed. Existing band and profile regression tests pass as well.
+
+These are host tests with pthread stand-ins, not kernel concurrency proofs.
+Real CPU hotplug, migrations/class/group changes, quota pressure, IRQ/steal
+reporting, lockdep, idle/resume and syscall/wakeup/audio latency remain device
+validation requirements. No device was flashed or exercised. Automatic profile
+integration remains OUT OF SCOPE and DISABLED.
+
+Initial controlled Note9 validation (not executed here)
+------------------------------------------------------
+First confirm baseline:
+  cat /proc/sys/kernel/sched_pelt_multiplier
+  # must show 2
+On a test build/device only, manually exercise 1, 2, 4, 2, checking each result:
+  echo 1 > /proc/sys/kernel/sched_pelt_multiplier
+  cat /proc/sys/kernel/sched_pelt_multiplier
+  echo 2 > /proc/sys/kernel/sched_pelt_multiplier
+  echo 4 > /proc/sys/kernel/sched_pelt_multiplier
+  echo 2 > /proc/sys/kernel/sched_pelt_multiplier
+Verify rejected 3 does not change it. Repeat under ordinary CFS activity,
+existing RT audio, task migration and existing quota workloads; independently
+exercise idle/AOD, suspend/resume and supported hotplug controls. Use a lockdep
+build where feasible, monitor dmesg for scheduler/locking warnings, and measure
+write and wakeup latency. Do not alter production RT budgets or firmware paths.
+Always finish by writing 2 and confirming it; do not enable panel automation.
+
+Before automatic Pragmatic integration
+--------------------------------------
+The cutover is a process-context control primitive, not callable from a
+utilization callback or under panel/rq/pi locks. Automatic integration still
+needs explicit manual/automatic ownership, one shared writer serialization
+point, stale display-request coalescing and lifecycle/error reporting. It must
+not directly assign either completed-setting scalar or an rq's shift. Device
+validation must establish hotplug/locking correctness and acceptable cutover,
+wakeup and audio latency before display events are connected. Frequent valid
+writes can contend with scheduler/hotplug activity even though each operation
+has bounded CPU-count work; no automatic cadence is selected in this milestone.

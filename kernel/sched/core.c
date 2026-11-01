@@ -103,20 +103,26 @@ DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 
 static void update_rq_clock_task(struct rq *rq, s64 delta);
 
-void update_rq_clock(struct rq *rq)
+/* Caller holds rq->lock. A PELT cutover must also settle skipped clocks. */
+static void __update_rq_clock(struct rq *rq)
 {
 	s64 delta;
-
-	lockdep_assert_held(&rq->lock);
-
-	if (rq->clock_skip_update & RQCF_ACT_SKIP)
-		return;
 
 	delta = sched_clock_cpu(cpu_of(rq)) - rq->clock;
 	if (delta < 0)
 		return;
 	rq->clock += delta;
 	update_rq_clock_task(rq, delta);
+}
+
+void update_rq_clock(struct rq *rq)
+{
+	lockdep_assert_held(&rq->lock);
+
+	if (rq->clock_skip_update & RQCF_ACT_SKIP)
+		return;
+
+	__update_rq_clock(rq);
 }
 
 /*
@@ -139,7 +145,43 @@ const_debug unsigned int sysctl_sched_features =
 const_debug unsigned int sysctl_sched_nr_migrate = 32;
 
 unsigned int sysctl_sched_pelt_multiplier = 2;
+/* Last completed global setting; accounting uses each rq's locked shift. */
 __read_mostly unsigned int sched_pelt_lshift = 1;
+
+/* Serialized by the sysctl mutex, with no rq/pi locks held on entry. */
+static void sched_pelt_set_multiplier(unsigned int value, unsigned int shift)
+{
+	int cpu;
+
+	if (value == READ_ONCE(sysctl_sched_pelt_multiplier))
+		return;
+
+	/* Stabilize hotplug, including CPUs currently offline. Every possible
+	 * rq was initialized by sched_init(); sched_clock_cpu() supports remote
+	 * samples. Do not wait for IPIs or require an idle/offline CPU to run.
+	 */
+	get_online_cpus();
+	for_each_possible_cpu(cpu) {
+		struct rq *rq = cpu_rq(cpu);
+		unsigned long flags;
+
+		raw_spin_lock_irqsave(&rq->lock, flags);
+		/* Preserve accumulated history. Settle all positive pending time
+		 * under the old local shift, even with RQCF_ACT_SKIP set, then
+		 * adopt the new slope at this rq's individual clock boundary.
+		 */
+		__update_rq_clock(rq);
+		rq->pelt_lshift = shift;
+		raw_spin_unlock_irqrestore(&rq->lock, flags);
+	}
+
+	/* No fallible or deferred operation follows the first rq cutover.
+	 * Publish completion only after ALL possible runqueues acknowledge.
+	 */
+	WRITE_ONCE(sched_pelt_lshift, shift);
+	WRITE_ONCE(sysctl_sched_pelt_multiplier, value);
+	put_online_cpus();
+}
 
 int sched_pelt_multiplier(struct ctl_table *table, int write,
 			  void __user *buffer, size_t *lenp, loff_t *ppos)
@@ -173,8 +215,7 @@ int sched_pelt_multiplier(struct ctl_table *table, int write,
 		goto out;
 	}
 
-	WRITE_ONCE(sched_pelt_lshift, shift);
-	WRITE_ONCE(sysctl_sched_pelt_multiplier, value);
+	sched_pelt_set_multiplier(value, shift);
 out:
 	mutex_unlock(&mutex);
 
@@ -888,7 +929,7 @@ static void update_rq_clock_task(struct rq *rq, s64 delta)
 #endif
 
 	rq->clock_task += delta;
-	rq->clock_task_mult += delta << READ_ONCE(sched_pelt_lshift);
+	rq->clock_task_mult += delta << rq->pelt_lshift;
 
 #if defined(CONFIG_IRQ_TIME_ACCOUNTING) || defined(CONFIG_PARAVIRT_TIME_ACCOUNTING)
 	if ((irq_delta + steal) && sched_feat(NONTASK_CAPACITY))
@@ -7969,6 +8010,7 @@ void __init sched_init(void)
 
 		rq = cpu_rq(i);
 		raw_spin_lock_init(&rq->lock);
+		rq->pelt_lshift = sched_pelt_lshift;
 		rq->nr_running = 0;
 		rq->calc_load_active = 0;
 		rq->calc_load_update = jiffies + LOAD_FREQ;
