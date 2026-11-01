@@ -1,5 +1,6 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <linux/pragmatic_diag.h>
 #include <linux/platform_device.h>
 #include <linux/pm_qos.h>
 #include <linux/slab.h>
@@ -294,6 +295,8 @@ static int __init exynos_acpm_dvfs_init(void)
 
 	if (ret < 0)
 		pr_err("acpm_dvfs_init fail ret = %d\n", ret);
+	else
+		pr_diag_set_channel(acpm_dvfs.ch_num);
 
 	return platform_driver_register(&samsung_acpm_dvfs_driver);
 }

@@ -9,6 +9,7 @@
 
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/pragmatic_diag.h>
 #include <linux/init.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -415,11 +416,14 @@ int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg, bool w
 	u32 retry_cnt = 0;
 	u32 tmp_seq_num;
 	u32 seq_cnt = 0;
+	struct pr_diag_ipc diag = { .stamp = { 0, 0 } };
 
 	if (channel_id >= acpm_ipc->num_channels && !cfg)
 		return -EIO;
 
 	channel = &acpm_ipc->channel[channel_id];
+	diag = pr_diag_ipc_begin(channel_id, cfg->cmd, cfg->response,
+				 channel->polling, w_mode);
 
 	spin_lock(&channel->tx_lock);
 
@@ -436,11 +440,13 @@ int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg, bool w
 	if (timeout_flag) {
 		spin_unlock(&channel->tx_lock);
 		pr_err("[%s] tx buffer full! timeout!!!\n", __func__);
+		pr_diag_ipc_end(&diag, -ETIMEDOUT);
 		return -ETIMEDOUT;
 	}
 
 	if (!cfg->cmd) {
 		spin_unlock(&channel->tx_lock);
+		pr_diag_ipc_end(&diag, -EIO);
 		return -EIO;
 	}
 
@@ -480,6 +486,7 @@ int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg, bool w
 	if (ret) {
 		pr_err("[ACPM] indirection command fail %d\n", ret);
 		spin_unlock(&channel->tx_lock);
+		pr_diag_ipc_end(&diag, ret);
 		return ret;
 	}
 
@@ -495,8 +502,12 @@ retry:
 
 		while (!(__raw_readl(acpm_ipc->intr + INTSR1) & (1 << channel->id)) ||
 				check_response(channel, cfg)) {
+			if (diag.stamp.epoch)
+				diag.loops++;
 			now = sched_clock();
 			if (timeout < now) {
+				pr_diag_add_stamp(diag.cpu, PRD_ACPM_DEADLINE_EVENTS,
+						  1, diag.stamp);
 				if (retry_cnt > 5) {
 					timeout_flag = true;
 					break;
@@ -512,16 +523,23 @@ retry:
 					continue;
 				}
 			} else {
-				if (w_mode)
+				if (w_mode) {
+					if (diag.stamp.epoch)
+						diag.sleeps++;
 					usleep_range(50, 100);
-				else
+				} else {
+					if (diag.stamp.epoch)
+						diag.delays++;
 					udelay(10);
+				}
 			}
 		}
 
 		if (timeout_flag) {
-			if (!check_response(channel, cfg))
+			if (!check_response(channel, cfg)) {
+				pr_diag_ipc_end(&diag, 0);
 				return 0;
+			}
 			pr_err("%s Timeout error! now = %llu, timeout = %llu\n",
 					__func__, now, timeout);
 			pr_err("[ACPM] int_status:0x%x, ch_id: 0x%x\n",
@@ -534,6 +552,8 @@ retry:
 					__raw_readl(channel->tx_ch.rear),
 					__raw_readl(channel->tx_ch.front));
 
+			/* Preserve terminal evidence before the existing reset/BUG. */
+			pr_diag_ipc_end(&diag, -ETIMEDOUT);
 			msleep(1000);
 			s3c2410wdt_set_emergency_reset(0, 0);
 			BUG_ON(timeout_flag);
@@ -541,6 +561,7 @@ retry:
 		}
 	}
 
+	pr_diag_ipc_end(&diag, 0);
 	return 0;
 }
 
