@@ -507,6 +507,9 @@ struct cfs_rq {
 
 	u64 throttled_clock, throttled_clock_task;
 	u64 throttled_clock_task_time;
+#ifdef CONFIG_SCHED_EMS
+	u64 band_throttled_start, band_throttled_time;
+#endif
 	int throttled, throttle_count;
 	struct list_head throttled_list;
 #ifdef CONFIG_SCHED_WALT
@@ -899,6 +902,93 @@ static inline u64 rq_clock_task_mult(struct rq *rq)
 	lockdep_assert_held(&rq->lock);
 	return rq->clock_task_mult;
 }
+
+/* These are samples of one CFS accounting domain, not wall-clock time. */
+struct cfs_band_time {
+	u64 scaled, time, version;
+	struct cfs_rq *domain;
+};
+
+static inline void cfs_band_age_init(struct sched_avg *sa)
+{
+#ifdef CONFIG_SCHED_EMS
+	raw_spin_lock_init(&sa->band_age.lock);
+	sa->band_age.time = 0;
+	sa->band_age.version = 0;
+	sa->band_age.domain = NULL;
+#endif
+}
+
+/* Caller retains the existing PELT writer serialization (rq/pi lock).
+ * No callback, allocation, or other lock acquisition is allowed inside the
+ * short metadata critical sections. RT averages never publish a CFS domain.
+ */
+static inline void cfs_band_age_set(struct sched_avg *sa, struct cfs_rq *domain,
+				    u64 scaled, u64 time)
+{
+#ifdef CONFIG_SCHED_EMS
+	if (domain) {
+		unsigned long flags;
+
+		raw_spin_lock_irqsave(&sa->band_age.lock, flags);
+		WRITE_ONCE(sa->last_update_time, scaled);
+		sa->band_age.time = time;
+		sa->band_age.domain = domain;
+		sa->band_age.version++;
+		raw_spin_unlock_irqrestore(&sa->band_age.lock, flags);
+		return;
+	}
+#endif
+	WRITE_ONCE(sa->last_update_time, scaled);
+}
+
+static inline void cfs_band_age_invalidate(struct sched_avg *sa)
+{
+#ifdef CONFIG_SCHED_EMS
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&sa->band_age.lock, flags);
+	sa->band_age.domain = NULL;
+	sa->band_age.time = 0;
+	sa->band_age.version++;
+	raw_spin_unlock_irqrestore(&sa->band_age.lock, flags);
+#endif
+}
+
+static inline void cfs_band_age_reset(struct sched_avg *sa)
+{
+#ifdef CONFIG_SCHED_EMS
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&sa->band_age.lock, flags);
+	WRITE_ONCE(sa->last_update_time, 0);
+	sa->band_age.domain = NULL;
+	sa->band_age.time = 0;
+	sa->band_age.version++;
+	raw_spin_unlock_irqrestore(&sa->band_age.lock, flags);
+#else
+	WRITE_ONCE(sa->last_update_time, 0);
+#endif
+}
+
+#ifdef CONFIG_SCHED_EMS
+static inline struct cfs_band_time cfs_band_age_read(struct sched_avg *sa)
+{
+	struct cfs_band_time t;
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&sa->band_age.lock, flags);
+	t.domain = sa->band_age.domain;
+	/* A class copy may write last_update_time outside this lock, but only
+	 * after invalidation and before reattachment. Do not sample it then.
+	 */
+	t.scaled = t.domain ? READ_ONCE(sa->last_update_time) : 0;
+	t.time = sa->band_age.time;
+	t.version = sa->band_age.version;
+	raw_spin_unlock_irqrestore(&sa->band_age.lock, flags);
+	return t;
+}
+#endif
 
 #define RQCF_REQ_SKIP	0x01
 #define RQCF_ACT_SKIP	0x02

@@ -733,6 +733,7 @@ void init_entity_runnable_average(struct sched_entity *se)
 {
 	struct sched_avg *sa = &se->avg;
 
+	cfs_band_age_init(sa);
 	sa->last_update_time = 0;
 	/*
 	 * sched_avg's period_contrib should be strictly less then 1024, so
@@ -761,6 +762,8 @@ void init_entity_runnable_average(struct sched_entity *se)
 }
 
 static inline u64 cfs_rq_clock_task(struct cfs_rq *cfs_rq);
+static inline u64 cfs_rq_band_clock(struct cfs_rq *cfs_rq);
+static struct cfs_band_time cfs_rq_load_time(struct cfs_rq *cfs_rq);
 static void attach_entity_cfs_rq(struct sched_entity *se);
 
 /*
@@ -829,7 +832,8 @@ util_init_done:
 			 * such that the next switched_to_fair() has the
 			 * expected state.
 			 */
-			se->avg.last_update_time = cfs_rq_clock_task(cfs_rq);
+			cfs_band_age_set(&se->avg, cfs_rq, cfs_rq_clock_task(cfs_rq),
+					 cfs_rq_band_clock(cfs_rq));
 			return;
 		}
 
@@ -2932,7 +2936,7 @@ accumulate_sum(u64 delta, int cpu, struct sched_avg *sa,
 static __always_inline int
 ___update_load_avg(u64 now, int cpu, struct sched_avg *sa,
 		  unsigned long weight, int running, struct cfs_rq *cfs_rq,
-		  struct rt_rq *rt_rq)
+		  struct rt_rq *rt_rq, u64 band_time, struct cfs_rq *band_domain)
 {
 	u64 delta;
 
@@ -2942,7 +2946,7 @@ ___update_load_avg(u64 now, int cpu, struct sched_avg *sa,
 	 * unfortunately does during sched clock init when we swap over to TSC.
 	 */
 	if ((s64)delta < 0) {
-		sa->last_update_time = now;
+		cfs_band_age_set(sa, band_domain, now, band_time);
 		return 0;
 	}
 
@@ -2954,7 +2958,8 @@ ___update_load_avg(u64 now, int cpu, struct sched_avg *sa,
 	if (!delta)
 		return 0;
 
-	sa->last_update_time += delta << 10;
+	cfs_band_age_set(sa, band_domain, sa->last_update_time + (delta << 10),
+			 band_time);
 
 	/*
 	 * running is a subset of runnable (weight) so running can't be set if
@@ -3021,9 +3026,11 @@ static inline void cfs_se_util_change(struct sched_avg *avg)
 }
 
 static int
-__update_load_avg_blocked_se(u64 now, int cpu, struct sched_entity *se)
+__update_load_avg_blocked_se(u64 now, int cpu, struct sched_entity *se,
+			     u64 band_time, struct cfs_rq *domain)
 {
-	return ___update_load_avg(now, cpu, &se->avg, 0, 0, NULL, NULL);
+	return ___update_load_avg(now, cpu, &se->avg, 0, 0, NULL, NULL,
+				 band_time, domain);
 }
 
 static int
@@ -3031,7 +3038,8 @@ __update_load_avg_se(u64 now, int cpu, struct cfs_rq *cfs_rq, struct sched_entit
 {
 	if (___update_load_avg(now, cpu, &se->avg,
 				  se->on_rq * scale_load_down(se->load.weight),
-				  cfs_rq->curr == se, NULL, NULL)) {
+				  cfs_rq->curr == se, NULL, NULL,
+				  cfs_rq_band_clock(cfs_rq), cfs_rq)) {
 			cfs_se_util_change(&se->avg);
 			if (entity_is_task(se))
 				cfs_se_util_change_multi_load(task_of(se), &se->avg);
@@ -3046,7 +3054,8 @@ __update_load_avg_cfs_rq(u64 now, int cpu, struct cfs_rq *cfs_rq)
 {
 	return ___update_load_avg(now, cpu, &cfs_rq->avg,
 			scale_load_down(cfs_rq->load.weight),
-			cfs_rq->curr != NULL, cfs_rq, NULL);
+			cfs_rq->curr != NULL, cfs_rq, NULL,
+			 cfs_rq_band_clock(cfs_rq), cfs_rq);
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -3092,9 +3101,12 @@ void set_task_rq_fair(struct sched_entity *se,
 {
 	u64 p_last_update_time;
 	u64 n_last_update_time;
+	u64 p_band_time = 0, n_band_time = 0;
 
-	if (!sched_feat(ATTACH_AGE_LOAD))
+	if (!sched_feat(ATTACH_AGE_LOAD)) {
+		cfs_band_age_invalidate(&se->avg);
 		return;
+	}
 
 	/*
 	 * We are supposed to update the task to "current" time, then its up to
@@ -3103,9 +3115,22 @@ void set_task_rq_fair(struct sched_entity *se,
 	 * time. This will result in the wakee task is less decayed, but giving
 	 * the wakee more load sounds not bad.
 	 */
-	if (!(se->avg.last_update_time && prev))
+	if (!(se->avg.last_update_time && prev)) {
+		cfs_band_age_invalidate(&se->avg);
 		return;
+	}
 
+#ifdef CONFIG_SCHED_EMS
+	{
+		struct cfs_band_time p = cfs_rq_load_time(prev);
+		struct cfs_band_time n = cfs_rq_load_time(next);
+
+		p_last_update_time = p.scaled;
+		n_last_update_time = n.scaled;
+		p_band_time = p.time;
+		n_band_time = n.time;
+	}
+#else
 #ifndef CONFIG_64BIT
 	{
 		u64 p_last_update_time_copy;
@@ -3127,8 +3152,10 @@ void set_task_rq_fair(struct sched_entity *se,
 	p_last_update_time = prev->avg.last_update_time;
 	n_last_update_time = next->avg.last_update_time;
 #endif
-	__update_load_avg_blocked_se(p_last_update_time, cpu_of(rq_of(prev)), se);
-	se->avg.last_update_time = n_last_update_time;
+#endif /* CONFIG_SCHED_EMS */
+	__update_load_avg_blocked_se(p_last_update_time, cpu_of(rq_of(prev)), se,
+				     p_band_time, prev);
+	cfs_band_age_set(&se->avg, next, n_last_update_time, n_band_time);
 }
 
 /* Take into account change of utilization of a child task group */
@@ -3400,7 +3427,7 @@ int update_rt_rq_load_avg(u64 now, int cpu, struct rt_rq *rt_rq, int running)
 #endif
 	}
 
-	decayed = ___update_load_avg(now, cpu, sa, 0, running, NULL, rt_rq);
+	decayed = ___update_load_avg(now, cpu, sa, 0, running, NULL, rt_rq, 0, NULL);
 
 #ifndef CONFIG_64BIT
 	smp_wmb();
@@ -3461,7 +3488,9 @@ static inline void update_load_avg(struct sched_entity *se, int flags)
  */
 static void attach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	se->avg.last_update_time = cfs_rq->avg.last_update_time;
+	struct cfs_band_time t = cfs_rq_load_time(cfs_rq);
+
+	cfs_band_age_set(&se->avg, cfs_rq, t.scaled, t.time);
 	cfs_rq->avg.load_avg += se->avg.load_avg;
 	cfs_rq->avg.load_sum += se->avg.load_sum;
 	cfs_rq->avg.util_avg += se->avg.util_avg;
@@ -3541,6 +3570,21 @@ static inline u64 cfs_rq_last_update_time(struct cfs_rq *cfs_rq)
 }
 #endif
 
+/* Obtain the matching raw/scaled publication, never a current raw clock
+ * paired with an older last_update_time. No rq lock is needed by blocked
+ * migration/wakeup callers, and no metadata locks are nested.
+ */
+static struct cfs_band_time cfs_rq_load_time(struct cfs_rq *cfs_rq)
+{
+#ifdef CONFIG_SCHED_EMS
+	return cfs_band_age_read(&cfs_rq->avg);
+#else
+	struct cfs_band_time t = { .scaled = cfs_rq_last_update_time(cfs_rq) };
+
+	return t;
+#endif
+}
+
 /*
  * Synchronize entity load avg of dequeued entity without locking
  * the previous rq.
@@ -3548,10 +3592,10 @@ static inline u64 cfs_rq_last_update_time(struct cfs_rq *cfs_rq)
 void sync_entity_load_avg(struct sched_entity *se)
 {
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
-	u64 last_update_time;
+	struct cfs_band_time t = cfs_rq_load_time(cfs_rq);
 
-	last_update_time = cfs_rq_last_update_time(cfs_rq);
-	__update_load_avg_blocked_se(last_update_time, cpu_of(rq_of(cfs_rq)), se);
+	__update_load_avg_blocked_se(t.scaled, cpu_of(rq_of(cfs_rq)), se,
+				     t.time, cfs_rq);
 }
 
 /*
@@ -4305,6 +4349,17 @@ static inline u64 cfs_rq_clock_task(struct cfs_rq *cfs_rq)
 	return rq_clock_task_mult(rq_of(cfs_rq)) - cfs_rq->throttled_clock_task_time;
 }
 
+static inline u64 cfs_rq_band_clock(struct cfs_rq *cfs_rq)
+{
+#ifdef CONFIG_SCHED_EMS
+	if (unlikely(cfs_rq->throttle_count))
+		return cfs_rq->band_throttled_start - cfs_rq->band_throttled_time;
+	return rq_clock_task(rq_of(cfs_rq)) - cfs_rq->band_throttled_time;
+#else
+	return 0;
+#endif
+}
+
 /* returns 0 on failure to allocate runtime */
 static int assign_cfs_rq_runtime(struct cfs_rq *cfs_rq)
 {
@@ -4444,6 +4499,10 @@ static int tg_unthrottle_up(struct task_group *tg, void *data)
 		/* adjust cfs_rq_clock_task() */
 		cfs_rq->throttled_clock_task_time += rq_clock_task_mult(rq) -
 					     cfs_rq->throttled_clock_task;
+#ifdef CONFIG_SCHED_EMS
+		cfs_rq->band_throttled_time += rq_clock_task(rq) -
+					      cfs_rq->band_throttled_start;
+#endif
 	}
 
 	return 0;
@@ -4455,8 +4514,12 @@ static int tg_throttle_down(struct task_group *tg, void *data)
 	struct cfs_rq *cfs_rq = tg->cfs_rq[cpu_of(rq)];
 
 	/* group is entering throttled state, stop time */
-	if (!cfs_rq->throttle_count)
+	if (!cfs_rq->throttle_count) {
 		cfs_rq->throttled_clock_task = rq_clock_task_mult(rq);
+#ifdef CONFIG_SCHED_EMS
+		cfs_rq->band_throttled_start = rq_clock_task(rq);
+#endif
+	}
 	cfs_rq->throttle_count++;
 
 	return 0;
@@ -4877,6 +4940,9 @@ static void sync_throttle(struct task_group *tg, int cpu)
 
 	cfs_rq->throttle_count = pcfs_rq->throttle_count;
 	cfs_rq->throttled_clock_task = rq_clock_task_mult(cpu_rq(cpu));
+#ifdef CONFIG_SCHED_EMS
+	cfs_rq->band_throttled_start = rq_clock_task(cpu_rq(cpu));
+#endif
 }
 
 /* conditionally throttle active cfs_rq's from put_prev_entity() */
@@ -5071,6 +5137,15 @@ static void walt_fixup_cumulative_runnable_avg_fair(struct rq *rq,
 static inline u64 cfs_rq_clock_task(struct cfs_rq *cfs_rq)
 {
 	return rq_clock_task_mult(rq_of(cfs_rq));
+}
+
+static inline u64 cfs_rq_band_clock(struct cfs_rq *cfs_rq)
+{
+#ifdef CONFIG_SCHED_EMS
+	return rq_clock_task(rq_of(cfs_rq));
+#else
+	return 0;
+#endif
 }
 
 static void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec) {}
@@ -7855,7 +7930,7 @@ static void migrate_task_rq_fair(struct task_struct *p)
 	remove_entity_load_avg(&p->se);
 
 	/* Tell new CPU we are migrated */
-	p->se.avg.last_update_time = 0;
+	cfs_band_age_reset(&p->se.avg);
 
 	/* We have migrated, no longer consider this task hot */
 	p->se.exec_start = 0;
@@ -11424,6 +11499,8 @@ static void switched_to_fair(struct rq *rq, struct task_struct *p)
 	 * Need to scale the applying ratio while migrating.
 	 * - Copy rt sched avg into fair sched avg
 	 */
+	/* RT timestamps do not carry the CFS throttle offset/domain. */
+	cfs_band_age_invalidate(&p->se.avg);
 	copy_sched_avg(&p->rt.avg, &p->se.avg, 100);
 	attach_task_cfs_rq(p);
 
@@ -11460,6 +11537,15 @@ static void set_curr_task_fair(struct rq *rq)
 
 void init_cfs_rq(struct cfs_rq *cfs_rq)
 {
+#ifdef CONFIG_SMP
+	cfs_band_age_init(&cfs_rq->avg);
+#endif
+#ifdef CONFIG_SCHED_EMS
+#ifdef CONFIG_CFS_BANDWIDTH
+	cfs_rq->band_throttled_start = 0;
+	cfs_rq->band_throttled_time = 0;
+#endif
+#endif
 	cfs_rq->tasks_timeline = RB_ROOT;
 	cfs_rq->min_vruntime = (u64)(-(1LL << 20));
 #ifndef CONFIG_64BIT
@@ -11490,7 +11576,7 @@ static void task_move_group_fair(struct task_struct *p)
 
 #ifdef CONFIG_SMP
 	/* Tell se's cfs_rq has been changed -- migrated */
-	p->se.avg.last_update_time = 0;
+	cfs_band_age_reset(&p->se.avg);
 #endif
 	attach_task_cfs_rq(p);
 }

@@ -5445,6 +5445,10 @@ void init_idle(struct task_struct *idle, int cpu)
 	raw_spin_lock(&rq->lock);
 
 	__sched_fork(0, idle);
+#ifdef CONFIG_SMP
+	/* Idle tasks bypass sched_fork()'s entity-average initialization. */
+	cfs_band_age_init(&idle->se.avg);
+#endif
 	idle->state = TASK_RUNNING;
 	idle->se.exec_start = sched_clock();
 

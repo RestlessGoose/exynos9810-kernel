@@ -131,30 +131,41 @@ static void pick_playable_cpus(struct task_band *band)
 
 static unsigned long out_of_time = 100000000;	/* 100ms */
 
-/* Task timestamps belong to their CFS runqueue's PELT clock, including
- * group throttling offsets. They cannot be aged against CPU0's wall clock.
+/* Preserve the same CFS domain and throttling exclusions, using paired
+ * unmultiplied samples rather than interpreting history with today's slope.
  */
 static bool band_task_stale(struct task_struct *p)
 {
 	struct cfs_rq *cfs_rq;
-	u64 last, now;
-	bool stale;
+	struct cfs_band_time last, now, check;
+	bool stale = false;
 
 	rcu_read_lock();
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	cfs_rq = READ_ONCE(p->se.cfs_rq);
 #else
-	cfs_rq = cfs_rq_of(&p->se);
+	cfs_rq = &task_rq(p)->cfs;
 #endif
-	last = READ_ONCE(p->se.avg.last_update_time);
-	now = READ_ONCE(cfs_rq->avg.last_update_time);
-	stale = last && (s64)(now - last) >
-		(s64)((u64)out_of_time << READ_ONCE(sched_pelt_lshift));
-#ifdef CONFIG_FAIR_GROUP_SCHED
-	/* Migration/attachment raced with this best-effort load snapshot. */
-	if (cfs_rq != READ_ONCE(p->se.cfs_rq))
+	last = cfs_band_age_read(&p->se.avg);
+	/* domain is only compared; dereference the current RCU-protected rq. */
+	if (last.scaled && last.domain == cfs_rq) {
+		now = cfs_band_age_read(&cfs_rq->avg);
+		if (now.domain == cfs_rq)
+			stale = (s64)(now.time - last.time) > (s64)READ_ONCE(out_of_time);
+	}
+	/* Bound the reader to one attempt. Any update/migration, including
+	 * A->B->A between snapshots, conservatively keeps the task fresh.
+	 * Metadata locks are never nested and never enclose another lock.
+	 */
+	check = cfs_band_age_read(&p->se.avg);
+	if (last.version != check.version)
 		stale = false;
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	if (cfs_rq != READ_ONCE(p->se.cfs_rq))
+#else
+	if (cfs_rq != &task_rq(p)->cfs)
 #endif
+		stale = false;
 	rcu_read_unlock();
 	return stale;
 }

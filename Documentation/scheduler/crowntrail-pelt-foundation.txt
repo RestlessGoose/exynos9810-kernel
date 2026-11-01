@@ -1,0 +1,155 @@
+CrownTrail PELT runtime-switching foundation
+==========================================
+
+Scope
+-----
+These changes validate the existing sysctl candidate and remove EMS band's
+use of the current PELT multiplier to interpret historical intervals. They do
+NOT implement a synchronized multiplier cutover, enable automatic switching,
+or change the 2x default. The existing writable sysctl still does not provide
+scheduler-wide interval synchronization; do not use it as proof that automatic
+runtime switching is safe.
+
+Sysctl publication
+------------------
+The parser operates on a private candidate under the existing writer mutex.
+Only 1, 2 or 4 is published. Invalid candidates never become visible through
+the public sysctl variable, including while proc_dointvec is processing input.
+This does not make the multiplier and shift a single atomic status snapshot.
+
+Band accounting domain
+----------------------
+Each CFS sched_avg carries a paired sample:
+  last_update_time: existing multiplied, quantized PELT timestamp (unchanged).
+  band_age.time: unmultiplied rq clock_task at the same publication event,
+                 minus the same CFS group's accumulated throttled intervals.
+  band_age.domain: CFS runqueue identity, compared but never dereferenced.
+  band_age.version: incremented on every publication or invalidation.
+
+Band compares the task sample with its CURRENT CFS runqueue's paired sample.
+Its 100ms threshold is now in unmultiplied CFS accounting nanoseconds. This is
+NOT wall-clock aging: IRQ/steal exclusions remain those of rq->clock_task;
+group throttling freezes the clock, and idle/stale rq clocks retain the
+existing update cadence. Band does not advance a runqueue clock itself.
+
+The new timestamp is sampled only when the existing PELT timestamp advances
+(or is explicitly attached/rebased). No PELT sums, decay calculations, frequency
+invariance, task placement algorithms or profile policy are changed.
+
+Throttling
+----------
+The unmultiplied exclusion is maintained alongside throttled_clock_task_time.
+The first throttle captures its start; nested throttles only increment the
+existing count. Only the final unthrottle accumulates the elapsed exclusion.
+Thus descendants exclude the UNION of throttled intervals rather than counting
+nested ancestors twice. sync_throttle initializes a new child's start in its
+own CPU domain, just as for the original multiplied clock. No historical
+scaled interval is divided by the currently selected multiplier.
+
+Lifecycle and migration
+-----------------------
+* Normal task/group entity initialization and idle initialization initialize
+  private metadata locks before first use. init_cfs_rq initializes root and
+  allocated group metadata and unmultiplied throttle offsets.
+* PELT updates publish paired task/group samples. RT aggregate updates remain
+  on their old path and never acquire CFS metadata locks.
+* Blocked synchronization samples the corresponding group pair; it must not
+  combine an old group PELT timestamp with today's raw rq clock.
+* set_task_rq_fair ages against the source pair and rebases BOTH timestamps to
+  the destination pair, preserving the existing throw-away-lag semantics.
+  It takes no source/destination rq locks (callers may hold only p->pi_lock).
+* migrate_task_rq_fair and fair/RT task_move_group reset the CFS pair together
+  with the existing last_update_time reset. ATTACH_AGE_LOAD disabled, missing
+  source origin, or uninitialized timestamps invalidate the tag; band treats
+  these as fresh until a valid CFS accounting update/attachment establishes it.
+* Detachment preserves the last valid CFS sample, matching the existing PELT
+  behavior. Attachment takes the destination group's coherent pair.
+* RT-to-fair invalidates before copy_sched_avg copies the original numeric
+  fields; attachment establishes a CFS pair. The lock/tag is never copied by
+  copy_sched_avg. Fair-to-RT retains the last CFS footprint, as previously.
+* Without FAIR_GROUP_SCHED the identity is the task's CPU root CFS runqueue;
+  band checks the current CPU runqueue again after sampling.
+
+Concurrency and cost
+--------------------
+A short per-sched_avg raw spinlock protects the timestamp/tag/version tuple.
+Existing rq/pi serialization still protects load arithmetic. Lock order is
+existing rq/pi/band locks -> metadata lock. Metadata critical sections contain
+only loads/stores, acquire no other locks and invoke no callbacks. Readers
+never hold two metadata locks at once. There are no allocations, sleeping
+locks, retry loops, work items, new references or teardown callbacks.
+
+Band samples entity, group, then entity version again; a concurrent entity
+update or migration (including A->B->A) conservatively keeps the task fresh.
+It also retains the original current-domain recheck and RCU protection.
+The saved domain tag is never used to access memory. Existing task/band and
+RCU task-group lifetime rules are unchanged. Version wrap requires 2^64
+publications between snapshots and is not a practical ABA case.
+
+On the target ARM64 non-lockdep configuration, sched_avg grows by 32 bytes
+(including otherwise unused RT averages), plus 16 bytes per bandwidth-enabled
+CFS runqueue. There is one short lock/unlock for each CFS timestamp publication
+and three bounded snapshots per band member. Neither cost is measured on a
+phone here. A lockdep-enabled device test remains valuable before release.
+
+Constant-multiplier equivalence
+-------------------------------
+At a fixed multiplier m, the two clocks integrate the SAME task-clock deltas
+and exclude the SAME throttle intervals. Original PELT timestamps are quantized
+in 1024 scaled ns steps; the raw sample belongs to the corresponding update
+event. Difference-of-samples rounding error is strictly below 1024 raw ns at
+1x, or 512 raw ns at 2x. Thus strict age comparisons can differ only within
+that distance of the 100ms boundary (and conservative concurrent/invalid
+snapshots). Load sums, averages, period contribution and original timestamps
+are numerically unchanged by this metadata at constant multipliers.
+
+Tests
+-----
+Run:
+  python3 tools/pragmatic/test_pelt_sysctl.py
+  python3 tools/pragmatic/test_band_age.py
+
+The tests compile extracted production helpers and throttle callbacks with
+pthread mutex stand-ins; exercise actual band freshness decisions, coherent
+publication and version ABA detection; compare a deterministic piecewise and
+nested-throttling reference; and run the real repository PELT recurrence and
+decay tables against the pre-change recurrence at 1x and 2x. EMS multi-load's
+unchanged callback and architecture capacity inputs are stubbed in that host
+recurrence test. This is NOT full scheduler, kernel-lockdep or device testing.
+
+Next milestone
+--------------
+Band no longer needs a current-shift interpretation of historical ages. A
+safe multiplier cutover still needs a proven per-CPU interval boundary,
+online/offline and migration serialization, blocked/idle accounting analysis,
+and coordinated manual/automatic ownership. These patches do not establish
+those properties or make a global shift write scheduler-wide atomic. Keep
+known-good 2x behavior until that separate milestone is validated.
+
+Validation for this foundation series
+-------------------------------------
+Both commits were built through the complete vmlinux/FIPS post-link target
+with Android Clang 20.0.0 r547379, ThinLTO and -j6, in an isolated source copy.
+The config was reconstructed from the checkout's actual include/config/auto.conf;
+there were ZERO resolved option differences. The root generated config and build
+scripts were not changed. Enabled: SMP, FAIR_GROUP_SCHED, CFS_BANDWIDTH,
+RT_GROUP_SCHED, SCHED_EMS, SCHED_TUNE, POWER_ENVELOPE, Pragmatic and ThinLTO.
+The final compiled production files matched the working sources byte-for-byte.
+
+Focused ARM64 object compilation (private autoconf overlays, NOT linked kernels):
+  SCHED_EMS=n: core/fair/rt PASS (band is excluded by its Makefile).
+  CFS_BANDWIDTH=n: core/fair/rt/band PASS.
+  RT_GROUP_SCHED=n: core/fair/rt/band PASS.
+  FAIR_GROUP_SCHED=n, CFS_BANDWIDTH=n: fair/band PASS; core/rt FAIL in an
+    existing task_change_group conditional mismatch with RT_GROUP_SCHED=y.
+    The same errors were reproduced using the pre-series core/rt sources;
+    struct sched_class's relevant conditional is unchanged by this series.
+    This configuration has NOT been validated as a linked kernel.
+
+git diff --check PASS. Host sysctl test: 140000 serialized writer calls.
+Band tests: 400000 concurrent tuple operations; 100000 piecewise/nested-throttle
+reference steps; 200000 quantization cases; 200000 actual old/new PELT updates
+with identical numeric state. Existing Pragmatic profile regression tests also
+passed. None of these results substitutes for kernel-lockdep, CPU-hotplug,
+CFS-quota, migration, audio or wake-latency tests on a device. No device was
+flashed or exercised.

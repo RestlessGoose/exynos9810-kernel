@@ -1388,8 +1388,23 @@ struct part {
  * Then it is the load_weight's responsibility to consider overflow
  * issues.
  */
+#ifdef CONFIG_SCHED_EMS
+/* Paired CFS accounting sample, independent of the current PELT slope.
+ * The lock covers only timestamp publication/snapshot, never load arithmetic.
+ * domain is a comparison tag, not an owned/dereferenced reference.
+ */
+struct cfs_band_age {
+	raw_spinlock_t lock;
+	u64 time, version;
+	struct cfs_rq *domain;
+};
+#endif
+
 struct sched_avg {
 	u64 last_update_time, load_sum;
+#ifdef CONFIG_SCHED_EMS
+	struct cfs_band_age band_age;
+#endif
 	u32 util_sum, period_contrib;
 	unsigned long load_avg, util_avg;
 	struct util_est			util_est;
