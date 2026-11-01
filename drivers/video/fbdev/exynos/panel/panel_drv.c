@@ -9,6 +9,7 @@
  */
 
 #include <linux/err.h>
+#include <linux/pragmatic_profile.h>
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -1765,6 +1766,44 @@ static int fix_green(struct panel_device *panel) {
 }
 #endif
 
+/* io_lock held, or boot GPIO discovery before subdevice publication.
+ * NORMAL is not visible scanout until the display-on sequence completes.
+ */
+static void panel_publish_pragmatic_state(struct panel_device *panel)
+{
+#ifdef CONFIG_CPU_FREQ_GOV_PRAGMATIC
+	enum pr_display_state display = PR_DISPLAY_UNKNOWN;
+
+	if (panel->id != 0 || !panel->pragmatic_state_ready)
+		return;
+	if (panel->state.connect_panel == PANEL_CONNECT) {
+		switch (panel->state.cur_state) {
+		case PANEL_STATE_NORMAL:
+			if (panel->state.disp_on == PANEL_DISPLAY_ON)
+				display = PR_DISPLAY_NORMAL;
+			break;
+		case PANEL_STATE_ALPM:
+			display = PR_DISPLAY_ALPM;
+			break;
+		case PANEL_STATE_OFF:
+			display = PR_DISPLAY_OFF;
+			break;
+		case PANEL_STATE_ON:
+			if (panel->state.disp_on == PANEL_DISPLAY_OFF)
+				display = PR_DISPLAY_OFF;
+			break;
+		default:
+			break;
+		}
+	}
+	if (display != panel->pragmatic_state) {
+		panel->pragmatic_state = display;
+		/* Strictly nonblocking; no governor pointers, work or DVFS. */
+		pr_profile_display(display);
+	}
+#endif
+}
+
 static long panel_core_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	int ret = 0;
@@ -1877,6 +1916,10 @@ static long panel_core_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg
 		panel_err("PANEL:ERR:%s:failed to ioctl panel cmd : %d\n",
 			__func__,  _IOC_NR(cmd));
 	}
+	/* Inspect actual post-state even on an error/partial transition. The
+	 * cache avoids repeated notifications on frame-done and vsync.
+	 */
+	panel_publish_pragmatic_state(panel);
 	mutex_unlock(&panel->io_lock);
 
 	return (long)ret;
@@ -1973,6 +2016,14 @@ static int panel_drv_set_gpios(struct panel_device *panel)
 		__func__, rst_val, det_val,
 		(panel->state.init_at ? "BL" : "KERNEL"),
 		(panel->state.connect_panel ? "CONNECTED" : "DISCONNECTED"));
+
+#ifdef CONFIG_CPU_FREQ_GOV_PRAGMATIC
+	/* Do not publish the probe's placeholder OFF if GPIO discovery failed. */
+	if (rst_val == 0 || (rst_val == 1 && det_val >= 0)) {
+		panel->pragmatic_state_ready = true;
+		panel_publish_pragmatic_state(panel);
+	}
+#endif
 
 	return 0;
 }
@@ -2404,6 +2455,9 @@ static int panel_parse_dt(struct panel_device *panel)
 	}
 	panel_dbg("INFO:PANEL:%s:panel-id:%d\n", __func__, panel->id);
 
+	/* A new primary instance must not inherit a previous panel report. */
+	if (panel->id == 0)
+		pr_profile_display(PR_DISPLAY_UNKNOWN);
 	panel_parse_gpio(panel);
 
 	panel_parse_regulator(panel);
@@ -2628,6 +2682,9 @@ static int panel_drv_probe(struct platform_device *pdev)
 		goto probe_err;
 	}
 	panel->dev = dev;
+#ifdef CONFIG_CPU_FREQ_GOV_PRAGMATIC
+	panel->pragmatic_state = PR_DISPLAY_UNKNOWN;
+#endif
 
 	panel->state.init_at = PANEL_INIT_BOOT;
 	panel->state.connect_panel = PANEL_CONNECT;

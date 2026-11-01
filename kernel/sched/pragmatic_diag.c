@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Temporary Exynos9810 diagnostics. Storage never belongs to a policy. */
 #include <linux/pragmatic_diag.h>
+#include <linux/pragmatic_profile.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
 #include <linux/percpu.h>
 #include <linux/cpu.h>
 #include <linux/mutex.h>
 #include <linux/sched.h>
+#include <linux/sched/sysctl.h>
 #include <linux/uaccess.h>
 #include <linux/module.h>
 
@@ -67,6 +69,15 @@ static const char * const event_names[] = {
 	"acpm_poll_loops",
 	"acpm_udelay_calls",
 	"acpm_usleep_calls",
+	"profile_changes",
+	"display_changes",
+	"user_profile_changes",
+	"up_immediate",
+	"up_deferred",
+	"deferred_armed",
+	"deferred_executed",
+	"deferred_canceled",
+	"down_requests",
 };
 static const char * const metric_names[] = {
 	"worker",
@@ -193,6 +204,13 @@ static int stats_show(struct seq_file *s, void *unused)
 	mutex_lock(&control_lock);
 	seq_printf(s, "enabled=%u epoch=%lu dvfs_channel=%u\n",
 		   enabled, epoch, READ_ONCE(dvfs_channel));
+	{
+		u64 state = pr_profile_read();
+		seq_printf(s, "user_profile=%s active_profile=%s display_state=%s requested_pelt=%u actual_pelt=%u\n",
+			pr_profile_name(pr_user_id(state)), pr_profile_name(pr_effective_id(state)),
+			pr_display_name(pr_display_id(state)), pr_profile_policy(state)->requested_pelt,
+			READ_ONCE(sysctl_sched_pelt_multiplier));
+	}
 	seq_puts(s, "units: counts kHz sums ns; elapsed is NOT CPU runtime\n"
 		 "hist: <100us 100-<500us 500-<1000us 1-<2ms >=2ms\n");
 	for (p = 0; p < 2; p++) {
