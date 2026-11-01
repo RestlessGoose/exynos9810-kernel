@@ -750,6 +750,7 @@ struct rq {
 	u64 clock;
 	u64 clock_task;
 	u64 clock_task_mult;
+	unsigned int pelt_lshift; /* rq->lock; initialized for every possible CPU */
 
 	atomic_t nr_iowait;
 

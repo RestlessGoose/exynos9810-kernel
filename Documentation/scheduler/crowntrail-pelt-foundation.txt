@@ -3,6 +3,10 @@ CrownTrail PELT runtime-switching foundation
 
 Scope
 -----
+This document describes the foundation commits only. The later manual cutover
+implementation is documented in crowntrail-pelt-cutover.txt; automatic profile
+integration remains disabled.
+
 These changes validate the existing sysctl candidate and remove EMS band's
 use of the current PELT multiplier to interpret historical intervals. They do
 NOT implement a synchronized multiplier cutover, enable automatic switching,

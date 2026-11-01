@@ -38,6 +38,15 @@ static int proc_dointvec(struct ctl_table*t,int w,void*b,size_t*l,loff_t*p){
  return 0;
 }
 '''
+# This harness tests candidate validation only. The separate cutover harness
+# executes the real all-runqueue helper and clock-accounting implementation.
+prefix += r'''
+static void sched_pelt_set_multiplier(unsigned int value,unsigned int shift){
+ assert(value==1||value==2||value==4);
+ WRITE_ONCE(sched_pelt_lshift,shift);
+ WRITE_ONCE(sysctl_sched_pelt_multiplier,value);
+}
+'''
 c=prefix+handler(old).replace('int sched_pelt_multiplier(', 'int old_handler(',1)+handler(new)
 c+=r'''
 static int call(int (*fn)(struct ctl_table*,int,void*,size_t*,loff_t*),int w,int v){
