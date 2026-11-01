@@ -145,19 +145,20 @@ int sched_pelt_multiplier(struct ctl_table *table, int write,
 			  void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	static DEFINE_MUTEX(mutex);
-	unsigned int old, shift;
+	struct ctl_table tmp = *table;
+	unsigned int value, shift;
 	int ret;
 
 	mutex_lock(&mutex);
 
-	old = sysctl_sched_pelt_multiplier;
-	ret = proc_dointvec(table, write, buffer, lenp, ppos);
-	if (ret)
-		goto restore;
-	if (!write)
+	/* Lockless status readers must never observe an unvalidated value. */
+	value = READ_ONCE(sysctl_sched_pelt_multiplier);
+	tmp.data = &value;
+	ret = proc_dointvec(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
 		goto out;
 
-	switch (sysctl_sched_pelt_multiplier) {
+	switch (value) {
 	case 1:
 		shift = 0;
 		break;
@@ -169,14 +170,11 @@ int sched_pelt_multiplier(struct ctl_table *table, int write,
 		break;
 	default:
 		ret = -EINVAL;
-		goto restore;
+		goto out;
 	}
 
 	WRITE_ONCE(sched_pelt_lshift, shift);
-	goto out;
-
-restore:
-	sysctl_sched_pelt_multiplier = old;
+	WRITE_ONCE(sysctl_sched_pelt_multiplier, value);
 out:
 	mutex_unlock(&mutex);
 
