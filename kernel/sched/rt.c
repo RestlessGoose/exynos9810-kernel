@@ -2188,7 +2188,7 @@ static void task_move_group_rt(struct task_struct *p)
 
 #ifdef CONFIG_SMP
 	/* Tell se's cfs_rq has been changed -- migrated */
-	p->se.avg.last_update_time = 0;
+	cfs_band_age_reset(&p->se.avg);
 #endif
 	attach_task_rt_rq(p);
 }
