@@ -1,0 +1,266 @@
+Pragmatic adaptive profiles (Exynos9810, Linux 4.9)
+================================================
+
+Implemented: global requested/effective profiles, authoritative Samsung panel
+state publication, selective upward hysteresis and conservative credit refill.
+IMPORTANT LIMITATION: automatic PELT multiplier switching is NOT implemented.
+The scheduler remains at its existing default 2x; requested screen-off 1x is
+reported as intent only. See the source-backed safety assessment below.
+No RT bandwidth, vendor policy, thermal, OCP, firmware or Power Envelope changes.
+
+Global interface
+----------------
+/sys/devices/system/cpu/cpufreq/pragmatic/
+  profile                    0644: optimal / powersave (also 0 / 1)
+  active_profile             0444: optimal / powersave / screen_off
+  display_state              0444: normal / alpm / off / unknown
+  available_profiles         0444: optimal powersave
+  requested_pelt_multiplier  0444: 2 / 2 / 1, profile intent ONLY
+  pelt_multiplier            0444: actual existing scheduler sysctl value
+  pelt_control               0444: external; automatic switching deferred
+
+Example (root):
+  p=/sys/devices/system/cpu/cpufreq/pragmatic
+  echo powersave > "$p/profile"
+  cat "$p/profile" "$p/active_profile" "$p/display_state"
+  cat "$p/requested_pelt_multiplier" "$p/pelt_multiplier" "$p/pelt_control"
+  echo optimal > "$p/profile"
+
+Default preference is optimal. screen_off is not a valid writable preference;
+invalid writes return EINVAL without changing the snapshot. Selection persists
+across display transitions and governor stop/start, not reboot. There is one
+control for both clusters, not per-policy competing knobs. For UNKNOWN, effective
+policy is always Optimal, retaining the user's stored choice for a later NORMAL.
+ALPM and OFF remain distinct display values but both select SCREEN_OFF.
+
+Initial centralized constants (kernel/sched/pragmatic_profile.c)
+---------------------------------------------------------------
+                    Optimal     Power-saver      Screen-off
+minor upward hold      none       4000 us          8000 us
+maximum small rise     n/a        one OPP          two OPPs
+urgent utilization     n/a        >=60%            >=60%
+credit refill          100%       80%              60%
+requested PELT          2x         2x               1x (not applied)
+
+Original up/down spacing is unchanged (5000/3000 us unless the existing interface
+changes it). Existing energy-aware frequency selection is unchanged. Optimal
+adds no upward filter and preserves original credit arithmetic, watchdog,
+ceilings and retry/QoS reconciliation. No new frequency caps, down hold or
+minimum achieved-frequency residency are introduced.
+
+At HZ=250, holds are one/two timer ticks; they begin only AFTER the original rate
+limiter would admit a minor request. Timer quantization can fire before the full
+nominal microsecond interval when a request arrives just before a tick; scheduling
+can also delay execution. These are conservative tick-based filters, not hard
+real-time latency guarantees. One/two OPPs intentionally cover only nearby rises;
+large demand changes and high demand retain the original admission path.
+
+A rise bypasses profile hysteresis for RT/DL/IOWAIT flags or active I/O-wait boost,
+>=60% aggregated utilization, larger OPP jumps, pending limit changes, retry state,
+a required policy/QoS floor, repair of an unchanged cached target, or any
+reduction of an already cached/admitted target (even if hardware is still low). Bypass does
+not remove the original rate limiter. RT flags are not assumed to identify all
+latency-sensitive work: low-demand unmarked periodic jobs can still incur the
+small hold; board audio/wakeup testing is required. No task-name heuristic is used.
+
+Falling demand cancels a deferred rise, without adding a downward delay or
+shortening the existing downward rate. Repeated held calculations replace the
+pending target without pushing back its original deadline. A single plain timer
+releases persistent demand even if no further utilization callback arrives. It
+rechecks the current profile generation and live QoS/table mapping, and discards
+an entirely idle policy's obsolete request. The idle test is a lockless advisory
+nr_running snapshot; a concurrent/new wakeup re-enters normal governor admission.
+No periodic timer is added. New demand after an idle cancellation can arm a new
+one-shot. This reduces short-pulse oscillation; persistent periodic demand can
+still legitimately transition between minimum and higher OPPs.
+
+Credit debit, capacity, depletion thresholds and all existing safety ceilings
+are unchanged. Only refill is scaled, at the next ordinary CL1 accounting sample.
+Profile changes never reset debt, restore depleted credits or mint a fresh turbo
+budget. Existing legitimate high demand remains eligible under the same model
+and safety/credit rules. Sampling a mixed-profile interval uses the profile live
+at the credit update; it does not reconstruct a per-microsecond credit history.
+
+Architecture, ordering and lifetime
+----------------------------------
+One permanent atomic64 snapshot contains preference, display state, effective
+policy and a generation. A short IRQ-safe raw lock serializes writers so panel
+and sysfs updates cannot overwrite each other's fields. Readers load one word;
+immutable policy tables need no RCU allocation or pointer lifetime protocol.
+Generation advances only for effective-policy changes: ALPM -> OFF and selecting
+a future preference while off do not unnecessarily cancel valid deferred work.
+
+The manager holds no policy or panel pointers and has no asynchronous applier.
+Publishing under panel->io_lock changes only the snapshot and opt-in diagnostic
+counters: no sleeping, DVFS, PELT writes or worker wakeups. Governor adoption is
+deferred to its normal callbacks. Both clusters read the same global policy;
+this is not an atomic hardware-frequency transition across clusters. An already
+admitted frequency request is valid under the unchanged energy model and may
+finish normally. Deferred (not yet admitted) requests are generation-tagged and
+canceled/revalidated on the next callback or timer. A final generation check
+rejects an old timer release if publication changed before admission's snapshot.
+Concurrent publication after that check cannot cancel an already admitted call.
+
+Per-policy deferred state is protected by update_lock. Timer callbacks take
+that lock, never rq locks or work_lock. The timer releases its base lock before
+calling the callback; mod_timer/del_timer do not take scheduler rq locks. Plain
+timers avoid cancel_delayed_work's potential workqueue-flusher wakeup under an
+rq lock. Old timer invocations overlapping a new arm check the new deadline and
+cannot prematurely release its target. Timer time uses local_clock(), the same
+scheduler-clock basis used to advance rq_clock(), not ktime_get_ns().
+
+Lock order: panel io_lock -> manager raw lock -> diagnostic local IRQ section;
+sysfs -> manager raw lock; rq lock -> governor update_lock -> timer-base lock.
+There is no reverse manager acquisition by governor readers, and no callback
+with a timer-base lock held while acquiring update_lock. Diagnostic reads hold
+only their existing control mutex and never enter governor or panel locks.
+
+Stop marks the policy stopped and cancels pending state under update_lock,
+removes hooks and waits for their sched-RCU grace period, then del_timer_sync()
+joins the timer BEFORE IRQ-work synchronization and kthread-work cancellation.
+No joining call holds update_lock or work_lock. Existing CL1 producer/watchdog
+retirement remains intact. No callback can retain a freed policy after stop/exit;
+init failures cannot have armed the timer. Restart initializes a fresh pending
+state using the latest global snapshot. cpufreq_suspend() stops governors before
+ACME suspend (drivers/cpufreq/cpufreq.c:1699); resume restarts them. CPU hotplug uses
+the existing governor lifecycle; timer migration does not change policy ownership.
+
+Panel state evidence and scope
+------------------------------
+In panel_drv.c, panel_sleep_out() sets NORMAL before display-on has necessarily
+completed. panel_display_on() sets disp_on only after its sequence succeeds.
+The mapper therefore requires NORMAL + PANEL_DISPLAY_ON to publish NORMAL.
+NORMAL without scanout, unknown enum values, or disconnected panels map UNKNOWN.
+ALPM maps ALPM. OFF maps OFF. Powered-on sleep-in state ON with display-off also
+maps OFF. The cache is checked at ioctl exit while io_lock is held, even if the
+operation returned an error: the driver's actual resulting fields are used, not
+an assumed result based on the command. Hardware failures unreflected in those
+fields remain a driver/protocol limitation; this is not physical panel sensing.
+
+GPIO discovery publishes initial bootloader NORMAL only with valid reset and
+display-detect observations. Reset-low supplies initial OFF. Missing/failed GPIO
+observations keep UNKNOWN, rather than publishing probe's placeholder OFF.
+Only panel0 is authoritative (Note9 DTS aliases panel0 to /panel_drv@001).
+Secondary panels cannot override it. The cached published value prevents repeated
+notifications on frame-done/vsync. First frame-done enabling scanout is reported.
+Factory code changing disp_on outside the ioctl is reconciled at the next ioctl;
+its existing locking is not redesigned. CONFIG_SUPPORT_DOZE=n and governor-off
+builds do not require an ALPM callback or governor symbol.
+
+Why automatic PELT switching is deferred
+---------------------------------------
+The existing core.c:144 sched_pelt_multiplier sysctl serializes only writers,
+then writes sched_pelt_lshift (line 175). update_rq_clock_task (line 893) integrates
+each elapsed delta using whatever shift is current at that rq's NEXT update.
+There is no common-time cutover, per-rq old factor or blocked-entity epoch.
+
+Concrete boundary problem: CPU0 accounts a long interval at 2x just before a
+switch; a quiescent CPU1 accounts the same pre-switch interval at 1x just after
+it. Updating the integer alone retroactively charges CPU1's old interval at the
+new slope. Per-rq clocks remain monotonic, but history/decay interpretation can
+differ. CFS/throttled clocks, RT PELT (rt.c), EMS multi-load and task migration's
+rebase to destination cfs_rq timestamps all consume these domains. Merely locking
+and updating the global integer does not establish a consistent transition.
+
+EMS band.c:130-155 compares historical CFS PELT timestamps against a threshold
+shifted by the CURRENT factor. Example: 75 ms of old 2x age is 150 PELT ms; after
+switching to 1x the 100 ms threshold declares that task stale despite only 75 ms
+of physical age. Settling runqueue clocks alone cannot repair that mixed-history
+threshold. P.A.R.T. instead uses unmultiplied sched_clock_cpu(0), which must not
+be rescaled. Frequency invariance scales load independently; no change is made.
+
+Consequently this series does not call or bypass the old sysctl setter, write
+its variable, create another PELT clock, rebase tasks speculatively or claim
+screen-off 32 ms half-life. The existing manual sysctl remains external and is
+not newly certified safe. Leave it at the default 2x for these tests. Next step
+for automatic switching: separately design old/new slope boundaries for all
+runqueues and audit mixed-age band/migration/throttled/blocked histories. That
+scheduler work exceeds a safe small profile helper and needs its own validation.
+
+Diagnostics
+-----------
+Existing /sys/kernel/debug/pragmatic_diag controls remain disabled by default.
+The header of stats now shows preference, effective/display state and requested
+versus actual PELT. Global counters profile_changes, display_changes and
+user_profile_changes are recorded ONCE in policy0's bank, not once per cluster.
+They count effective-policy, display and stored-choice changes, respectively.
+Per policy: up_immediate counts admitted upward requests without profile delay;
+up_deferred counts held calculations; deferred_armed counts one-shot arms;
+deferred_executed counts admitted releases (possibly coalesced, not necessarily
+hardware transitions); deferred_canceled counts discarded held requests; and
+down_requests counts admitted downward requests. Hold calculations that exit
+before existing admission gates may cancel old demand but do not count an arm.
+Timer releases enter pr_commit, so commit_calculations/util_submissions now also
+include those timer-origin admissions. Existing worker/ACME/ACPM semantics remain.
+
+Validation and Note9 test plan
+------------------------------
+Run from the kernel root: python3 tools/pragmatic/test_profiles.py
+The self-contained host harness extracts actual manager/parser/panel/filter/timer
+and commit/credit functions, stubs kernel primitives and compares Optimal to
+pre-series ee98b7019779. It tests logic, not kernel concurrency or firmware.
+A real compile uses actual generated auto.conf, Clang 20 and ThinLTO in an
+isolated snapshot; embedded /proc/config.gz remains unrelated stock config.
+
+Controlled on-device checks (not performed by the implementation agent):
+1. Boot default Optimal; confirm profile=active_profile=optimal, display=normal,
+   actual PELT=2, diagnostics disabled. Compare interaction, worker schedstat,
+   transition counters and UI latency with pre-series. Test invalid writes.
+2. Select powersave once. Exercise light scrolling and sustained load, then
+   light periodic work. Check responsiveness, floors, limits and absence of
+   continuously rearming idle timers; compare deferred and transition counters.
+3. Enter/exit AOD and fully off rapidly. Check ALPM versus OFF and automatic
+   screen_off. Change preference while off, then wake and verify the stored
+   choice applies. Run rapid alternating writes and display transitions.
+4. Play Bluetooth audio screen-off for 30+ minutes, including AOD toggles,
+   notifications and alarms. Check underruns, wake responsiveness, dispatch
+   delays and driver errors. Unmarked low-demand audio may need tuning.
+5. Exercise suspend/resume, hotplug and supported governor stop/start with a
+   pending small rise. Check lockdep/debug-kernel warnings where available,
+   stale callbacks, stalls and unexpected minimum/high-OPP residency.
+6. Repeat matched-duration, disconnected-ADB captures with capture.sh for screen
+   on/idle, AOD and off. Compare actual worker schedstat, total_trans/time_in_state,
+   busy-delay estimates and battery energy/temperature. Fewer transitions or
+   lower clocks alone do not prove lower energy. Do not change protection limits.
+
+Remaining risks: timer latency/quantization and unmarked latency-sensitive work;
+RT-worker feedback may intentionally bypass filtering; advisory idle snapshots;
+profile/refill sample boundaries; panel errors not reflected in driver fields;
+and untested board suspend/hotplug/lock interactions. No device was flashed.
+No battery or responsiveness improvement is claimed without those measurements.
+
+Implementation validation results (2026-11-01)
+--------------------------------------------
+Full Clang 20 r547379 ThinLTO vmlinux build passed in /tmp/crowntrail-profiles,
+with zero differences between the checkout's generated auto.conf and resolved
+build configuration. RT_GROUP_SCHED, EMS, schedtune, Power Envelope, Pragmatic,
+doze support and existing debugfs remain enabled (HZ=250, NO_HZ_IDLE, not FULL).
+The final source also passed the incremental vmlinux link after focused checks.
+Eight affected/relevant translation units compiled. Conditional object checks
+passed for Pragmatic=n, SUPPORT_DOZE=n, DEBUG_FS=n and RT_GROUP_SCHED=n; these
+are not full alternate-config links and do not modify production configuration.
+Existing unrelated build warnings remain; no claim is made of a warning-free
+whole tree.
+
+Host checks passed 100000 rapid manager/panel cycles; 400000 Optimal decision
+comparisons against ee98b7019779; 34695 credit cases; and explicit floor, limit,
+admitted-target reduction, urgent demand, pending wake, off-state preference,
+stale generation, old/new timer overlap, idle/stop cancellation and jiffies wrap
+cases. The energy selector and effective OPP/rate-ready functions are checked
+against their pre-series source. git diff --check passed. Host synchronization
+stubs cannot validate real lock interleavings, hotplug, suspend, IRQ timing or
+firmware. No phone was accessed or flashed; those remain controlled board tests.
+
+Files in this series
+--------------------
+include/linux/pragmatic_profile.h
+kernel/sched/pragmatic_profile.c
+kernel/sched/cpufreq_pragmatic.c
+kernel/sched/Makefile
+include/linux/pragmatic_diag.h
+kernel/sched/pragmatic_diag.c
+drivers/video/fbdev/exynos/panel/panel_drv.c
+drivers/video/fbdev/exynos/panel/panel_drv.h
+Documentation/cpu-freq/pragmatic-profiles.txt
+Documentation/cpu-freq/pragmatic-diag.txt
+tools/pragmatic/test_profiles.py

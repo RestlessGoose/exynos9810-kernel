@@ -146,7 +146,7 @@ a compile-time boundary. CONFIG_DEBUG_FS must already be enabled to use controls
 
 Enabled: CPU-local counters protected by short local_irq_save/restore sections;
 no new spin/mutex acquisitions on scheduler or firmware paths, no cross-CPU
-counter writes, no event allocations (about 13 KiB of total counter banks on
+counter writes, no event allocations (about 14 KiB of total counter banks on
 eight CPUs). Existing update_lock protects diagnostic cached-target fields. Clock reads occur at submissions/worker/driver/IPC edges,
 not on every utilization callback. Poll loops add local integer increments and
 branches, no per-iteration timestamps or shared locks. Control-plane mutex is
@@ -245,3 +245,9 @@ and refusing an active collector. git diff --check passed.
 No device was flashed or tested. Debugfs operation, hotplug/suspend behavior,
 actual polling mode, measurement overhead and performance conclusions remain
 runtime validation items. Compilation and host tests do not establish those.
+
+Adaptive profile extensions
+---------------------------
+See pragmatic-profiles.txt for the profile/display snapshot, added global and
+per-policy hysteresis counters, timer-origin commit accounting, and the explicit
+limitation on automatic PELT switching. The original controls remain unchanged.
