@@ -197,11 +197,14 @@ static int sched_pelt_validate(unsigned int value)
 	}
 }
 
-int sched_pelt_auto_control(enum sched_pelt_action action, unsigned int value)
+int sched_pelt_auto_control(enum sched_pelt_action action, unsigned int value,
+			    bool *changed)
 {
 	int shift, ret = 0;
 
 	mutex_lock(&sched_pelt_mutex);
+	if (changed)
+		*changed = false;
 	if (action == SCHED_PELT_RELEASE)
 		value = 2;
 	shift = sched_pelt_validate(value);
@@ -223,6 +226,8 @@ int sched_pelt_auto_control(enum sched_pelt_action action, unsigned int value)
 		ret = -EINVAL;
 		goto out;
 	}
+	if (changed)
+		*changed = value != READ_ONCE(sysctl_sched_pelt_multiplier);
 	sched_pelt_set_multiplier(value, shift);
 	WRITE_ONCE(sched_pelt_automatic, action != SCHED_PELT_RELEASE);
 out:

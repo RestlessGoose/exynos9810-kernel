@@ -78,6 +78,12 @@ static const char * const event_names[] = {
 	"deferred_executed",
 	"deferred_canceled",
 	"down_requests",
+	"pelt_to_1",
+	"pelt_to_2",
+	"pelt_noops",
+	"pelt_coalesced",
+	"pelt_superseded",
+	"pelt_failures",
 };
 static const char * const metric_names[] = {
 	"worker",
@@ -87,6 +93,7 @@ static const char * const metric_names[] = {
 	"acme",
 	"acpm_poll",
 	"acpm_nonpoll",
+	"pelt_cutover",
 };
 
 /* All writers are bounded CPU-local IRQ-disabled sections. No DVFS locks.
@@ -210,6 +217,12 @@ static int stats_show(struct seq_file *s, void *unused)
 			pr_profile_name(pr_user_id(state)), pr_profile_name(pr_effective_id(state)),
 			pr_display_name(pr_display_id(state)), pr_profile_policy(state)->requested_pelt,
 			READ_ONCE(sysctl_sched_pelt_multiplier));
+	}
+	{
+		char status[160];
+
+		pr_pelt_status(status, sizeof(status));
+		seq_printf(s, "pelt_controller %s", status);
 	}
 	seq_puts(s, "units: counts kHz sums ns; elapsed is NOT CPU runtime\n"
 		 "hist: <100us 100-<500us 500-<1000us 1-<2ms >=2ms\n");

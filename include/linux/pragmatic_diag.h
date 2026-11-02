@@ -59,6 +59,12 @@ enum pr_diag_event {
 	PRD_DEFERRED_EXECUTED,
 	PRD_DEFERRED_CANCELED,
 	PRD_DOWN_REQUESTS,
+	PRD_PELT_TO_1,
+	PRD_PELT_TO_2,
+	PRD_PELT_NOOPS,
+	PRD_PELT_COALESCED,
+	PRD_PELT_SUPERSEDED,
+	PRD_PELT_FAILURES,
 	PRD_EVENTS
 };
 enum pr_diag_metric {
@@ -69,6 +75,7 @@ enum pr_diag_metric {
 	PRD_TIME_ACME,
 	PRD_TIME_ACPM_POLL,
 	PRD_TIME_ACPM_NONPOLL,
+	PRD_TIME_PELT,
 	PRD_METRICS
 };
 struct pr_diag_stamp { u64 ns; unsigned long epoch; };

@@ -1798,7 +1798,7 @@ static void panel_publish_pragmatic_state(struct panel_device *panel)
 	}
 	if (display != panel->pragmatic_state) {
 		panel->pragmatic_state = display;
-		/* Strictly nonblocking; no governor pointers, work or DVFS. */
+		/* Nonblocking publication; global PELT work is deferred. */
 		pr_profile_display(display);
 	}
 #endif
