@@ -16,7 +16,7 @@ fair = (ROOT / 'kernel/sched/fair.c').read_text()
 
 
 def function(text, name):
-    match = re.search(r'^(?:(?:static|inline|__always_inline|void|u64|u32|int)\s+)+' + re.escape(name) +
+    match = re.search(r'^(?:(?:static|inline|__always_inline|void|u64|u32|int|bool)\s+)+' + re.escape(name) +
                       r'\([^;{}]*\)\s*\{', text, re.M)
     start = match.start()
     opening = text.index('{', start)
@@ -33,7 +33,8 @@ old_clock = function(old, 'update_rq_clock_task').replace(
     'update_rq_clock_task(', 'old_update_rq_clock_task(', 1)
 production = ''.join(function(core, name) for name in [
     'update_rq_clock_task', '__update_rq_clock', 'update_rq_clock',
-    'sched_pelt_set_multiplier', 'sched_pelt_multiplier'])
+    'sched_pelt_set_multiplier', 'sched_pelt_validate', 'sched_pelt_auto_control',
+    'sched_pelt_auto_owned', 'sched_pelt_multiplier'])
 throttle = ''.join(function(fair, name) for name in [
     'cfs_rq_clock_task', 'cfs_rq_band_clock',
     'tg_throttle_down', 'tg_unthrottle_up'])
@@ -78,6 +79,9 @@ static void (*after_unlock)(pthread_mutex_t*);
 static pthread_rwlock_t hotplug=PTHREAD_RWLOCK_INITIALIZER;
 static bool online[NR];
 unsigned int sysctl_sched_pelt_multiplier=2,sched_pelt_lshift=1;
+DEFINE_MUTEX(sched_pelt_mutex);
+static bool sched_pelt_automatic;
+enum sched_pelt_action { SCHED_PELT_CLAIM,SCHED_PELT_UPDATE,SCHED_PELT_RELEASE };
 #define cpu_rq(c) (&queues[c])
 #define cpu_of(q) ((q)->cpu)
 #define for_each_possible_cpu(c) for((c)=0;(c)<NR;(c)++)
@@ -243,6 +247,16 @@ int main(void) {
  reset();samples[0]=100;irq_total[0]=300;steal_total[0]=100;
  checked_request(1);samples[0]=200;checked_request(4);
  samples[0]=500;checked_request(2);
+ assert(!sched_pelt_auto_control(SCHED_PELT_CLAIM,1));
+ assert(sched_pelt_auto_owned());assert(request(4)==-EBUSY);assert(request(1)==-EBUSY);
+ assert(sched_pelt_auto_control(SCHED_PELT_CLAIM,2)==-EBUSY);
+ assert(!sched_pelt_auto_control(SCHED_PELT_UPDATE,2));
+ assert(sched_pelt_auto_control(SCHED_PELT_UPDATE,3)==-EINVAL);
+ assert(!sched_pelt_auto_control(SCHED_PELT_RELEASE,0));
+ assert(!sched_pelt_auto_owned() && sysctl_sched_pelt_multiplier==2);
+ assert(sched_pelt_auto_control(SCHED_PELT_UPDATE,1)==-EBUSY);
+ assert(!request(4));assert(!request(2));
+ puts("PASS scheduler ownership claim/update/release, EBUSY, invalid requests and manual recovery");
  puts("PASS idempotence, invalid/failed requests leave all clocks unchanged, subsequent recovery");
  reset();samples[0]=100;after_unlock=check_mixed_boundary;
  assert(!request(1));after_unlock=NULL;

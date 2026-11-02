@@ -120,6 +120,10 @@ extern int sysctl_schedstats(struct ctl_table *table, int write,
 
 #ifdef CONFIG_SMP
 extern unsigned int sysctl_sched_pelt_multiplier;
+/* Process context only, no rq/pi/panel locks. RELEASE settles 2x first. */
+enum sched_pelt_action { SCHED_PELT_CLAIM, SCHED_PELT_UPDATE, SCHED_PELT_RELEASE };
+int sched_pelt_auto_control(enum sched_pelt_action action, unsigned int value);
+bool sched_pelt_auto_owned(void);
 int sched_pelt_multiplier(struct ctl_table *table, int write,
 			  void __user *buffer, size_t *lenp, loff_t *ppos);
 #endif
