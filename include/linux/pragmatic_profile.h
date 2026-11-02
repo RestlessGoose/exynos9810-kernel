@@ -28,6 +28,12 @@ static inline const struct pr_profile_policy *pr_profile_policy(u64 s)
 	return &pr_profile_policies[pr_effective_id(s)];
 }
 void pr_profile_display(enum pr_display_state state);
+void pr_pelt_profile_changed(u64 state);
+void pr_pelt_init(void);
+void pr_pelt_init_failed(void);
+int pr_pelt_set_auto(bool enable);
+bool pr_pelt_auto_enabled(void);
+int pr_pelt_status(char *buf, size_t size);
 const char *pr_profile_name(unsigned int id);
 const char *pr_display_name(unsigned int id);
 #else

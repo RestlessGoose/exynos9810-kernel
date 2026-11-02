@@ -25,6 +25,7 @@ typedef struct { u64 value; } atomic64_t;
 static u64 atomic64_read(atomic64_t *p){return p->value;}
 static void atomic64_set(atomic64_t *p,u64 v){p->value=v;}
 #define pr_diag_add(...) do {} while(0)
+void pr_pelt_profile_changed(u64 state) { (void)state; }
 #define raw_spin_lock_irqsave(l,f) ((f)=0)
 #define raw_spin_unlock_irqrestore(l,f) ((void)(f))
 #define READ_ONCE(x) (x)

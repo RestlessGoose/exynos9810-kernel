@@ -16,7 +16,7 @@ fair = (ROOT / 'kernel/sched/fair.c').read_text()
 
 
 def function(text, name):
-    match = re.search(r'^(?:(?:static|inline|__always_inline|void|u64|u32|int|bool)\s+)+' + re.escape(name) +
+    match = re.search(r'^(?:(?:static|inline|__always_inline|void|u64|u32|int|bool|ssize_t)\s+)+' + re.escape(name) +
                       r'\([^;{}]*\)\s*\{', text, re.M)
     start = match.start()
     opening = text.index('{', start)
@@ -247,14 +247,14 @@ int main(void) {
  reset();samples[0]=100;irq_total[0]=300;steal_total[0]=100;
  checked_request(1);samples[0]=200;checked_request(4);
  samples[0]=500;checked_request(2);
- assert(!sched_pelt_auto_control(SCHED_PELT_CLAIM,1));
+ assert(!sched_pelt_auto_control(SCHED_PELT_CLAIM,1,NULL));
  assert(sched_pelt_auto_owned());assert(request(4)==-EBUSY);assert(request(1)==-EBUSY);
- assert(sched_pelt_auto_control(SCHED_PELT_CLAIM,2)==-EBUSY);
- assert(!sched_pelt_auto_control(SCHED_PELT_UPDATE,2));
- assert(sched_pelt_auto_control(SCHED_PELT_UPDATE,3)==-EINVAL);
- assert(!sched_pelt_auto_control(SCHED_PELT_RELEASE,0));
+ assert(sched_pelt_auto_control(SCHED_PELT_CLAIM,2,NULL)==-EBUSY);
+ assert(!sched_pelt_auto_control(SCHED_PELT_UPDATE,2,NULL));
+ assert(sched_pelt_auto_control(SCHED_PELT_UPDATE,3,NULL)==-EINVAL);
+ assert(!sched_pelt_auto_control(SCHED_PELT_RELEASE,0,NULL));
  assert(!sched_pelt_auto_owned() && sysctl_sched_pelt_multiplier==2);
- assert(sched_pelt_auto_control(SCHED_PELT_UPDATE,1)==-EBUSY);
+ assert(sched_pelt_auto_control(SCHED_PELT_UPDATE,1,NULL)==-EBUSY);
  assert(!request(4));assert(!request(2));
  puts("PASS scheduler ownership claim/update/release, EBUSY, invalid requests and manual recovery");
  puts("PASS idempotence, invalid/failed requests leave all clocks unchanged, subsequent recovery");

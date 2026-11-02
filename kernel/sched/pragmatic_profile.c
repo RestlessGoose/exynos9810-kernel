@@ -11,7 +11,7 @@
 
 const struct pr_profile_policy pr_profile_policies[3] = {
 	[PR_OPTIMAL] = { 0, 0, 60, 100, 2 },
-	[PR_POWER_SAVER] = { 4000, 1, 60, 80, 2 },
+	[PR_POWER_SAVER] = { 4000, 1, 60, 80, 1 },
 	[PR_SCREEN_OFF] = { 8000, 2, 60, 60, 1 },
 };
 atomic64_t pr_profile_state = ATOMIC64_INIT(PR_PROFILE_INITIAL);
@@ -28,7 +28,7 @@ const char *pr_display_name(unsigned int id)
 	return id < ARRAY_SIZE(names) ? names[id] : "unknown";
 }
 
-/* profile_lock held; never sleeps or takes scheduler/cpufreq/panel locks.
+/* profile_lock held; nonblocking publication/work submission only.
  * Actual governor adoption is demand driven; no asynchronous manager can
  * apply an obsolete snapshot. Both clusters consult the same atomic word.
  */
@@ -48,6 +48,7 @@ static void pr_profile_publish(unsigned int user, unsigned int display)
 	}
 	next = (generation << 8) | (effective << 4) | (display << 2) | user;
 	atomic64_set(&pr_profile_state, next);
+	pr_pelt_profile_changed(next);
 }
 
 void pr_profile_display(enum pr_display_state display)
@@ -114,8 +115,32 @@ static ssize_t pelt_multiplier_show(struct kobject *kobj, struct kobj_attribute 
 }
 static ssize_t pelt_control_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE, "external; automatic runtime switching deferred\n");
+	return scnprintf(buf, PAGE_SIZE, "%s\n", sched_pelt_auto_owned() ? "automatic" : "external");
 }
+static ssize_t auto_pelt_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n", pr_pelt_auto_enabled());
+}
+static ssize_t auto_pelt_store(struct kobject *kobj, struct kobj_attribute *attr,
+			       const char *buf, size_t count)
+{
+	int ret;
+	bool enable;
+
+	if (sysfs_streq(buf, "0"))
+		enable = false;
+	else if (sysfs_streq(buf, "1"))
+		enable = true;
+	else
+		return -EINVAL;
+	ret = pr_pelt_set_auto(enable);
+	return ret ? ret : (ssize_t)count;
+}
+static ssize_t pelt_status_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	return pr_pelt_status(buf, PAGE_SIZE);
+}
+static struct kobj_attribute auto_pelt_attr = __ATTR(auto_pelt, 0644, auto_pelt_show, auto_pelt_store);
 static struct kobj_attribute profile_attr = __ATTR(profile, 0644, profile_show, profile_store);
 #define PR_ATTR_RO(name) static struct kobj_attribute name##_attr = __ATTR_RO(name)
 PR_ATTR_RO(active_profile);
@@ -124,10 +149,13 @@ PR_ATTR_RO(available_profiles);
 PR_ATTR_RO(requested_pelt_multiplier);
 PR_ATTR_RO(pelt_multiplier);
 PR_ATTR_RO(pelt_control);
+PR_ATTR_RO(pelt_status);
 static struct attribute *profile_attrs[] = {
 	&profile_attr.attr, &active_profile_attr.attr, &display_state_attr.attr,
 	&available_profiles_attr.attr, &requested_pelt_multiplier_attr.attr,
-	&pelt_multiplier_attr.attr, &pelt_control_attr.attr, NULL,
+	&pelt_multiplier_attr.attr, &pelt_control_attr.attr, &pelt_status_attr.attr,
+	/* Keep automatic admission last for failed-init lifetime safety. */
+	&auto_pelt_attr.attr, NULL,
 };
 static const struct attribute_group profile_group = { .attrs = profile_attrs };
 static int __init pr_profile_init(void)
@@ -140,9 +168,12 @@ static int __init pr_profile_init(void)
 	kobj = kobject_create_and_add("pragmatic", cpufreq_global_kobject);
 	if (!kobj)
 		return -ENOMEM;
+	pr_pelt_init();
 	ret = sysfs_create_group(kobj, &profile_group);
-	if (ret)
+	if (ret) {
+		pr_pelt_init_failed();
 		kobject_put(kobj);
+	}
 	return ret;
 }
 /* Governor is bool: manager and sysfs live until reboot, not policy exit. */
