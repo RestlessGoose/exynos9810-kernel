@@ -148,6 +148,9 @@ unsigned int sysctl_sched_pelt_multiplier = 2;
 /* Last completed global setting; accounting uses each rq's locked shift. */
 __read_mostly unsigned int sched_pelt_lshift = 1;
 
+static DEFINE_MUTEX(sched_pelt_mutex);
+static bool sched_pelt_automatic;
+
 /* Serialized by the sysctl mutex, with no rq/pi locks held on entry. */
 static void sched_pelt_set_multiplier(unsigned int value, unsigned int shift)
 {
@@ -183,42 +186,81 @@ static void sched_pelt_set_multiplier(unsigned int value, unsigned int shift)
 	put_online_cpus();
 }
 
+/* All ownership and completed-setting publication use this one mutex. */
+static int sched_pelt_validate(unsigned int value)
+{
+	switch (value) {
+	case 1: return 0;
+	case 2: return 1;
+	case 4: return 2;
+	default: return -EINVAL;
+	}
+}
+
+int sched_pelt_auto_control(enum sched_pelt_action action, unsigned int value)
+{
+	int shift, ret = 0;
+
+	mutex_lock(&sched_pelt_mutex);
+	if (action == SCHED_PELT_RELEASE)
+		value = 2;
+	shift = sched_pelt_validate(value);
+	if (shift < 0) {
+		ret = shift;
+		goto out;
+	}
+	if (action == SCHED_PELT_CLAIM) {
+		if (sched_pelt_automatic) {
+			ret = -EBUSY;
+			goto out;
+		}
+	} else if (action == SCHED_PELT_UPDATE || action == SCHED_PELT_RELEASE) {
+		if (!sched_pelt_automatic) {
+			ret = -EBUSY;
+			goto out;
+		}
+	} else {
+		ret = -EINVAL;
+		goto out;
+	}
+	sched_pelt_set_multiplier(value, shift);
+	WRITE_ONCE(sched_pelt_automatic, action != SCHED_PELT_RELEASE);
+out:
+	mutex_unlock(&sched_pelt_mutex);
+	return ret;
+}
+
+bool sched_pelt_auto_owned(void)
+{
+	return READ_ONCE(sched_pelt_automatic);
+}
+
 int sched_pelt_multiplier(struct ctl_table *table, int write,
 			  void __user *buffer, size_t *lenp, loff_t *ppos)
 {
-	static DEFINE_MUTEX(mutex);
 	struct ctl_table tmp = *table;
-	unsigned int value, shift;
-	int ret;
+	unsigned int value;
+	int shift, ret;
 
-	mutex_lock(&mutex);
-
-	/* Lockless status readers must never observe an unvalidated value. */
+	mutex_lock(&sched_pelt_mutex);
+	/* Keep even a partially parsed/rejected candidate private. */
 	value = READ_ONCE(sysctl_sched_pelt_multiplier);
 	tmp.data = &value;
 	ret = proc_dointvec(&tmp, write, buffer, lenp, ppos);
 	if (ret || !write)
 		goto out;
-
-	switch (value) {
-	case 1:
-		shift = 0;
-		break;
-	case 2:
-		shift = 1;
-		break;
-	case 4:
-		shift = 2;
-		break;
-	default:
-		ret = -EINVAL;
+	shift = sched_pelt_validate(value);
+	if (shift < 0) {
+		ret = shift;
 		goto out;
 	}
-
+	if (sched_pelt_automatic) {
+		ret = -EBUSY;
+		goto out;
+	}
 	sched_pelt_set_multiplier(value, shift);
 out:
-	mutex_unlock(&mutex);
-
+	mutex_unlock(&sched_pelt_mutex);
 	return ret;
 }
 

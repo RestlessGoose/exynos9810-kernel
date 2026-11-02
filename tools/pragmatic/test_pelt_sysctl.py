@@ -47,6 +47,9 @@ static void sched_pelt_set_multiplier(unsigned int value,unsigned int shift){
  WRITE_ONCE(sysctl_sched_pelt_multiplier,value);
 }
 '''
+prefix += '\nDEFINE_MUTEX(sched_pelt_mutex); static bool sched_pelt_automatic;\n'
+a=new.index('static int sched_pelt_validate(');b=new.index('\n}\n',a)+2
+prefix += new[a:b]+'\n'
 c=prefix+handler(old).replace('int sched_pelt_multiplier(', 'int old_handler(',1)+handler(new)
 c+=r'''
 static int call(int (*fn)(struct ctl_table*,int,void*,size_t*,loff_t*),int w,int v){
