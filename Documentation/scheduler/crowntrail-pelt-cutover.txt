@@ -3,9 +3,12 @@ CrownTrail per-runqueue PELT multiplier cutover
 
 Scope and interface
 -------------------
+This describes the manual foundation. The later opt-in owner/controller is
+documented in Documentation/cpu-freq/pragmatic-auto-pelt.txt; default remains off.
+
 This extends the foundation commits 571b6c7a44bd and 6df69e3ff800. It changes
-manual runtime switching only. Default remains 2x. There is no panel/profile
-integration, periodic work, second PELT clock, new sysfs control or new policy.
+manual runtime switching only. Default remains 2x. The later opt-in integration
+adds profile-driven control without changing this cutover mechanism.
 
 Existing control:
   /proc/sys/kernel/sched_pelt_multiplier   accepts 1, 2, 4; default 2

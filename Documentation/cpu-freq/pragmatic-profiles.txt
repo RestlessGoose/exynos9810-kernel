@@ -3,9 +3,9 @@ Pragmatic adaptive profiles (Exynos9810, Linux 4.9)
 
 Implemented: global requested/effective profiles, authoritative Samsung panel
 state publication, selective upward hysteresis and conservative credit refill.
-IMPORTANT LIMITATION: automatic PELT multiplier switching is NOT implemented.
-The scheduler remains at its existing default 2x; requested screen-off 1x is
-reported as intent only. See the source-backed safety assessment below.
+Automatic PELT switching is opt-in and DISABLED by default. With auto_pelt=0,
+profiles report intent without changing the scheduler. See pragmatic-auto-pelt.txt
+for the scheduler ownership/worker design and controlled test instructions.
 No RT bandwidth, vendor policy, thermal, OCP, firmware or Power Envelope changes.
 
 Global interface
@@ -15,9 +15,11 @@ Global interface
   active_profile             0444: optimal / powersave / screen_off
   display_state              0444: normal / alpm / off / unknown
   available_profiles         0444: optimal powersave
-  requested_pelt_multiplier  0444: 2 / 2 / 1, profile intent ONLY
+  requested_pelt_multiplier  0444: 2 / 1 / 1; intent while auto_pelt=0
   pelt_multiplier            0444: actual existing scheduler sysctl value
-  pelt_control               0444: external; automatic switching deferred
+  pelt_control               0444: external / automatic
+  auto_pelt                  0644: 0 / 1; default 0
+  pelt_status                0444: phase, readiness, completed state/error/timing
 
 Example (root):
   p=/sys/devices/system/cpu/cpufreq/pragmatic
@@ -40,7 +42,7 @@ minor upward hold      none       4000 us          8000 us
 maximum small rise     n/a        one OPP          two OPPs
 urgent utilization     n/a        >=60%            >=60%
 credit refill          100%       80%              60%
-requested PELT          2x         2x               1x (not applied)
+requested PELT          2x         1x               1x (opt-in application)
 
 Original up/down spacing is unchanged (5000/3000 us unless the existing interface
 changes it). Existing energy-aware frequency selection is unchanged. Optimal
@@ -90,10 +92,11 @@ immutable policy tables need no RCU allocation or pointer lifetime protocol.
 Generation advances only for effective-policy changes: ALPM -> OFF and selecting
 a future preference while off do not unnecessarily cancel valid deferred work.
 
-The manager holds no policy or panel pointers and has no asynchronous applier.
-Publishing under panel->io_lock changes only the snapshot and opt-in diagnostic
-counters: no sleeping, DVFS, PELT writes or worker wakeups. Governor adoption is
-deferred to its normal callbacks. Both clusters read the same global policy;
+The manager holds no policy or panel pointers. Publishing under panel->io_lock
+changes the snapshot, diagnostic counters and nonblocking global PELT work
+submission. It performs no sleeping, DVFS or scheduler-wide cutover. Frequency
+policy adoption remains deferred to the governor's normal callbacks. Both
+clusters read the same global policy;
 this is not an atomic hardware-frequency transition across clusters. An already
 admitted frequency request is valid under the unchanged energy model and may
 finish normally. Deferred (not yet admitted) requests are generation-tagged and
@@ -109,8 +112,9 @@ rq lock. Old timer invocations overlapping a new arm check the new deadline and
 cannot prematurely release its target. Timer time uses local_clock(), the same
 scheduler-clock basis used to advance rq_clock(), not ktime_get_ns().
 
-Lock order: panel io_lock -> manager raw lock -> diagnostic local IRQ section;
-sysfs -> manager raw lock; rq lock -> governor update_lock -> timer-base lock.
+Lock order: panel io_lock -> manager raw lock -> PELT publication raw lock
+-> workqueue submission/internal wakeup locks; sysfs -> manager raw lock;
+rq lock -> governor update_lock -> timer-base lock.
 There is no reverse manager acquisition by governor readers, and no callback
 with a timer-base lock held while acquiring update_lock. Diagnostic reads hold
 only their existing control mutex and never enter governor or panel locks.
@@ -147,41 +151,26 @@ Factory code changing disp_on outside the ioctl is reconciled at the next ioctl;
 its existing locking is not redesigned. CONFIG_SUPPORT_DOZE=n and governor-off
 builds do not require an ALPM callback or governor symbol.
 
-Why automatic PELT switching is deferred
----------------------------------------
-The existing core.c:144 sched_pelt_multiplier sysctl serializes only writers,
-then writes sched_pelt_lshift (line 175). update_rq_clock_task (line 893) integrates
-each elapsed delta using whatever shift is current at that rq's NEXT update.
-There is no common-time cutover, per-rq old factor or blocked-entity epoch.
+PELT synchronization and optional automatic control
+-------------------------------------------------
+The foundation and manual-cutover work resolved private candidate validation,
+EMS mixed-history band aging and per-runqueue old-slope settlement. See
+Documentation/scheduler/crowntrail-pelt-foundation.txt and
+Documentation/scheduler/crowntrail-pelt-cutover.txt. Both manual and automatic
+requests now share scheduler ownership serialization and that same cutover.
 
-Concrete boundary problem: CPU0 accounts a long interval at 2x just before a
-switch; a quiescent CPU1 accounts the same pre-switch interval at 1x just after
-it. Updating the integer alone retroactively charges CPU1's old interval at the
-new slope. Per-rq clocks remain monotonic, but history/decay interpretation can
-differ. CFS/throttled clocks, RT PELT (rt.c), EMS multi-load and task migration's
-rebase to destination cfs_rq timestamps all consume these domains. Merely locking
-and updating the global integer does not establish a consistent transition.
-
-EMS band.c:130-155 compares historical CFS PELT timestamps against a threshold
-shifted by the CURRENT factor. Example: 75 ms of old 2x age is 150 PELT ms; after
-switching to 1x the 100 ms threshold declares that task stale despite only 75 ms
-of physical age. Settling runqueue clocks alone cannot repair that mixed-history
-threshold. P.A.R.T. instead uses unmultiplied sched_clock_cpu(0), which must not
-be rescaled. Frequency invariance scales load independently; no change is made.
-
-Consequently this series does not call or bypass the old sysctl setter, write
-its variable, create another PELT clock, rebase tasks speculatively or claim
-screen-off 32 ms half-life. The existing manual sysctl remains external and is
-not newly certified safe. Leave it at the default 2x for these tests. Next step
-for automatic switching: separately design old/new slope boundaries for all
-runqueues and audit mixed-age band/migration/throttled/blocked histories. That
-scheduler work exceeds a safe small profile helper and needs its own validation.
+Automatic control remains off until explicitly enabled. The separate permanent
+controller follows effective-profile intent without changing frequency policy
+constants, resetting utilization, or depending on a governor policy lifetime.
+See pragmatic-auto-pelt.txt for debounce, errors, synchronization and limitations.
 
 Diagnostics
 -----------
 Existing /sys/kernel/debug/pragmatic_diag controls remain disabled by default.
-The header of stats now shows preference, effective/display state and requested
-versus actual PELT. Global counters profile_changes, display_changes and
+The header of stats shows preference, effective/display state and requested
+versus completed PELT, plus the automatic controller status. Automatic cutover
+counters/timings are recorded in policy0's bank; details are in
+pragmatic-auto-pelt.txt. Global counters profile_changes, display_changes and
 user_profile_changes are recorded ONCE in policy0's bank, not once per cluster.
 They count effective-policy, display and stored-choice changes, respectively.
 Per policy: up_immediate counts admitted upward requests without profile delay;

@@ -1,0 +1,226 @@
+Pragmatic opt-in automatic PELT control
+======================================
+
+Defaults and mapping
+--------------------
+auto_pelt defaults to 0 on every boot. The scheduler default remains 2x.
+There is no persistent kernel preference storage and no shipping config change.
+Mapping follows the EXISTING effective-profile snapshot:
+  optimal                  2x (~16ms PELT half-life)
+  powersave                1x (~32ms)
+  screen_off (ALPM or OFF)  1x (~32ms)
+  unknown display/fallback 2x (existing effective Optimal fallback)
+Only requested_pelt in the Power-saver policy table changes; frequency selection,
+hysteresis, rate limits, timers, credits, QoS, Power Envelope and protections
+are unchanged. With automatic mode off, profile changes do not alter PELT.
+Automatic Optimal at 2x retains the existing constant-multiplier behavior;
+Power-saver at automatic 1x intentionally changes utilization response speed.
+
+Global sysfs ABI
+----------------
+/sys/devices/system/cpu/cpufreq/pragmatic/
+  profile                    RW optimal / powersave (existing preference)
+  active_profile             RO optimal / powersave / screen_off
+  display_state              RO normal / alpm / off / unknown
+  requested_pelt_multiplier  RO current effective profile's 1 or 2
+  pelt_multiplier            RO scheduler's LAST COMPLETED setting (1/2/4)
+  pelt_control               RO external / automatic (scheduler ownership)
+  auto_pelt                  RW 0 / 1 only, default 0
+  pelt_status                RO phase, ready, committed enabled, requested,
+                                completed, error, last_control_ns
+  available_profiles         RO optimal powersave
+
+Phases: external, enabling, pending, applying, automatic, disabling, error,
+recovering. Enabling/disabling/applying/recovering indicate an in-flight control
+operation. During a mixed-runqueue cutover, completed remains the scheduler's
+last globally completed setting. It is never a claim that all CPUs change at
+the same physical instant. ready=0 indicates unavailable/uninitialized worker
+resources. last_control_ns is the last successful CHANGED automatic cutover's
+wall duration in the current diagnostic epoch; 0 if unavailable/reset/disabled.
+Status reads are live snapshots; separate sysfs reads are not transactional.
+
+Writing 1 claims scheduler ownership and synchronously applies the current
+profile, including an already screen-off boot state, WITHOUT entry debounce.
+Only successful completion sets auto_pelt=1. Subsequent publications are handled
+asynchronously. Duplicate 1 does not reset deadlines or force pending work;
+a repeated 1 after an error retries the current request synchronously.
+
+Writing 0 serializes behind any already admitted operation, cancels pending
+work non-synchronously, settles 2x using the scheduler API, and releases ownership.
+Only then is auto_pelt reported as 0. Queued workers observe the disabled state
+and exit. A duplicate 0 in external mode does NOT overwrite a manual 1x/4x.
+A later manual writer may legitimately change the value after release's
+linearization point, even before the disabling syscall's caller next reads it.
+
+Scheduler ownership
+-------------------
+core.c's one sched_pelt_mutex now covers sysctl candidate parsing/validation,
+automatic CLAIM/UPDATE/RELEASE, ownership checks and completed-setting publication.
+Valid manual writes return EBUSY while automatic ownership is held, including
+same-value writes. Invalid values still return EINVAL. Reads always work.
+External mode retains manual 1/2/4 requests and their idempotent behavior.
+Pragmatic never assigns either global multiplier variable or any rq shift.
+
+The existing all-POSSIBLE-runqueue cutover is reused unchanged: stabilize
+hotplug, settle each locked queue under its old local factor, adopt its new
+factor, then publish completion. Boundaries remain individual. Clock history,
+CFS/RT PELT, throttle exclusions, EMS paired raw band ages, idle/offline handling
+and migration rules remain those documented in crowntrail-pelt-cutover.txt.
+There is no mass reset or additional clock. The API also returns changed/no-op
+from inside its serialization, avoiding a diagnostic attribution race against
+a manual writer arriving before CLAIM. Requests have no failure after admission.
+
+Controller, publication and stale requests
+------------------------------------------
+One built-in ordered WQ_HIGHPRI|WQ_FREEZABLE workqueue serves BOTH clusters.
+It is created by the global profile manager, not policy start/stop. There are no
+cpufreq-policy or panel pointers, task_struct references, recurring timers or
+per-event allocations. It survives governor changes, CPU hotplug and suspend;
+ordinary governor teardown cannot free it. Code/storage live until reboot.
+
+Profile publication still atomically publishes preference, display, effective
+profile and its existing generation. It briefly acquires a controller raw lock
+to update the desired value/deadline and submit/coalesce delayed work. Submission
+is nonblocking; standard workqueue internal wakeup/rq locks may be acquired.
+No rq-locked/utilization callback publishes profiles or takes these raw locks.
+The governor still consumes the original generation semantics unchanged.
+
+The worker and auto_pelt stores share pelt_control_lock. Worker admission reads
+the LATEST atomic profile snapshot under the short publication lock, then releases
+that lock before the scheduler API. Publication before that read is incorporated;
+publication after it is a new event DURING an already admitted operation, which
+must finish. The worker rereads the latest snapshot afterward and queues a
+follow-up if needed. At most one cutover runs per worker invocation. Work already
+queued always rereads current intent; it cannot replay a saved old profile after
+a newer cutover. Same-multiplier generations coalesce rather than forcing another
+transition. No profile fields or user preference are rewritten by the controller.
+
+Locking:
+  process control: pelt_control_lock -> scheduler sched_pelt_mutex ->
+                   hotplug read exclusion -> one rq lock
+  brief state:     pelt_control_lock -> pelt_lock (released before cutover)
+  publication:     panel io_lock -> profile_lock -> pelt_lock -> workqueue locks
+  diagnostic read: existing diagnostic control mutex -> brief pelt_lock
+There is no pelt/profile/panel/governor lock held across the scheduler call.
+The scheduler clock body takes no controller lock; governor callbacks read the
+atomic snapshot without acquiring either publication lock. No reverse rq-to-
+publication edge is added. Synchronous cancellation never holds a mutex needed
+by the worker. Timing publication happens only after the scheduler mutex is
+released. Diagnostic add/time helpers use their existing local IRQ sections.
+
+Debounce and waking
+--------------------
+Entering screen_off with a NEW 1x goal gets a one-shot 120ms deadline (30 ticks
+at HZ=250). Same-goal publications do not push it back. Power-saver requests
+are immediate when they change the goal; switching between two 1x profiles does
+not extend an existing deadline. First enable and explicit recovery are immediate.
+A new 2x goal replaces pending delayed work with delay 0. It never inherits the
+screen-off delay. If 1x was already admitted, it completes, then the latest 2x
+request is queued immediately. There is no unsafe cancellation or polling.
+
+Panel semantics are preserved: NORMAL requires successful display-on, ALPM and
+OFF remain distinct, and only actual changed state is published. Successful
+sleep-out can produce NORMAL-with-display-off, published UNKNOWN. That existing
+Optimal fallback requests 2x before a later frame-done publishes fully NORMAL.
+Thus no separate early-wake event is added. The hardware sleep-out sequence
+itself and workqueue/freezer/hotplug contention can still delay 2x; this must be
+measured on the Note9. Unknown intermediates also mean a Power-saver wake can
+briefly use the mandated 2x fallback before fully NORMAL returns to 1x.
+
+Failure/lifetime rules
+----------------------
+* Invalid sysfs values fail before changing mode. Invalid scheduler values fail
+  before admission; ownership conflict returns EBUSY.
+* Failed initial CLAIM leaves automatic mode disabled and prior scheduler
+  ownership/value intact. UPDATE failure retains ownership and last completion;
+  phase=error exposes errno. A new profile event or repeated 1 retries, without
+  periodic retry. Failed RELEASE retains enabled ownership; writing 0 retries.
+* Worker allocation failure leaves profile/manual controls usable, auto_pelt=0,
+  ready=0/error=ENOMEM; enabling fails. Allocation is not retried until reboot.
+* A failed global sysfs group setup gates publication, cancels work synchronously
+  and destroys the workqueue. auto_pelt is the LAST regular attribute and there
+  are no binary attributes: fs/sysfs/group.c has no failing step after that final
+  file succeeds, so no automatic store/admission can have existed on this error
+  path. No runtime unload path is invented for this bool/built-in manager.
+* Disable cannot abandon an admitted transition or a stack-backed asynchronous
+  object (none exists). The worker takes the same control mutex and exits after
+  observing disabled state. Freezable work follows kernel suspend/thaw semantics;
+  late/rapid display events are revalidated after thaw rather than replayed.
+* Hotplug contention waits in the existing scheduler API. There is no timeout,
+  rollback of individual rq shifts, fabricated completion or task-tree walk.
+
+Diagnostics
+-----------
+Existing /sys/kernel/debug/pragmatic_diag/{enabled,stats,reset} remain unchanged.
+Default diagnostics are OFF. Stats include pelt_controller status and, globally
+in policy0's bank:
+  pelt_to_1 / pelt_to_2  successful CHANGED automatic cutovers
+  pelt_noops             successful requests needing no cutover
+  pelt_coalesced         publications already requesting the same goal
+  pelt_superseded        replaced pending goals or admitted operations requiring
+                         a newer different goal after completion
+  pelt_failures          rejected automatic API requests
+  pelt_cutover           count, total_ns, max_ns, latency histogram
+Timing is end-to-end wall time for successful changed automatic operations,
+including scheduler ownership/hotplug/rq-lock waiting, NOT consumed CPU time.
+No-op/error requests do not alter that timing metric or last_control_ns. The
+existing epoch/reset rules exclude operations crossing reset/disable. Disabled
+diagnostics cause no ktime calls. Other governor/ACME/ACPM counters are preserved.
+These counters do not measure manual sysctl cutovers in external mode.
+
+Validation boundaries
+---------------------
+Host tests compile/extract the real controller, profile manager, scheduler API,
+cutover and CFS/RT consumers. Simulated workqueues/time/freezer/locks are NOT proof
+of real kernel concurrency, migrations, CPU hotplug or device wake/audio latency.
+Run from the kernel root:
+  python3 tools/pragmatic/test_auto_pelt.py
+  python3 tools/pragmatic/test_pelt_sysctl.py
+  python3 tools/pragmatic/test_pelt_cutover.py
+  python3 tools/pragmatic/test_band_age.py
+  python3 tools/pragmatic/test_profiles.py
+The automatic harness also runs the cutover suite, injected pre-admission errors,
+mid-cutover profile updates, racing disable, concurrent manual/mode writes,
+10000 rapid display/user cycles, timer wrap, initialization failure/cleanup and
+diagnostic-disabled/epoch behavior. Full Clang 20 ThinLTO and release conditional
+compilation are required in addition. CONFIG_SCHED_DEBUG must NOT gate the PELT
+sysctl. No debug options are enabled merely to expose it. No phone was accessed.
+
+Controlled rooted Note9 checks (not executed here)
+-------------------------------------------------
+  P=/sys/devices/system/cpu/cpufreq/pragmatic
+  M=/proc/sys/kernel/sched_pelt_multiplier
+  D=/sys/kernel/debug/pragmatic_diag
+  cat "$P/auto_pelt" "$P/pelt_control" "$P/pelt_multiplier"
+  # Fresh boot: 0, external, 2
+  echo 0 > "$P/auto_pelt"
+  echo 2 > "$M"
+  echo optimal > "$P/profile"
+  echo 1 > "$D/enabled"          # optional; requires debugfs mounted
+  echo 1 > "$P/auto_pelt"
+  cat "$P/auto_pelt" "$P/pelt_status"
+  echo powersave > "$P/profile"
+  sleep 1
+  cat "$P/profile" "$P/active_profile" "$P/requested_pelt_multiplier"
+  cat "$P/pelt_multiplier" "$P/pelt_status"   # expect 1
+  echo optimal > "$P/profile"
+  sleep 1
+  cat "$P/pelt_multiplier"                    # expect 2
+  echo 4 > "$M"                              # expect EBUSY while automatic
+
+Physically enter AOD and fully off separately; after >120ms check display_state,
+active_profile and completed multiplier, then wake and verify the selected user
+profile. Repeat rapid cycles; change user profile while off; test Bluetooth music,
+alarms and notifications, policy stop/start, suspend/resume and supported hotplug.
+Do not infer screen state by writing a fake sysfs event. Check diagnostics and:
+  cat "$D/stats"
+  dmesg | tail -n 100
+Watch for warnings, lockups, wakeup delays and audio glitches. Prefer a lockdep
+test build if available; retain release defaults. Controller wall times do not
+replace actual audio/wakeup latency measurements. Then restore known-good mode:
+  echo 0 > "$P/auto_pelt"       # synchronously settles/restores 2x, releases owner
+  echo 2 > "$M"                # explicit manual baseline
+  echo optimal > "$P/profile"
+  echo 0 > "$D/enabled"
+  cat "$P/auto_pelt" "$P/pelt_control" "$M"  # 0, external, 2
+Automatic control stays opt-in until real Note9 concurrency/latency validation.
