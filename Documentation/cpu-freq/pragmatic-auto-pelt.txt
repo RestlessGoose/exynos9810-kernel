@@ -1,9 +1,12 @@
-Pragmatic opt-in automatic PELT control
-======================================
+Pragmatic automatic PELT control
+================================
 
 Defaults and mapping
 --------------------
-auto_pelt defaults to 0 on every boot. The scheduler default remains 2x.
+The scheduler starts at 2x. Automatic control claims ownership during Pragmatic
+profile initialization and defaults to 1 after a successful claim. Until then,
+the scheduler keeps its existing 2x default; allocation or claim failure leaves
+automatic control off and reports the error in pelt_status.
 There is no persistent kernel preference storage and no shipping config change.
 Mapping follows the EXISTING effective-profile snapshot:
   optimal                  2x (~16ms PELT half-life)
@@ -25,7 +28,7 @@ Global sysfs ABI
   requested_pelt_multiplier  RO current effective profile's 1 or 2
   pelt_multiplier            RO scheduler's LAST COMPLETED setting (1/2/4)
   pelt_control               RO external / automatic (scheduler ownership)
-  auto_pelt                  RW 0 / 1 only, default 0
+  auto_pelt                  RW 0 / 1 only, default 1 after successful init
   pelt_status                RO phase, ready, committed enabled, requested,
                                 completed, error, last_control_ns
   available_profiles         RO optimal powersave
@@ -39,8 +42,13 @@ resources. last_control_ns is the last successful CHANGED automatic cutover's
 wall duration in the current diagnostic epoch; 0 if unavailable/reset/disabled.
 Status reads are live snapshots; separate sysfs reads are not transactional.
 
-Writing 1 claims scheduler ownership and synchronously applies the current
-profile, including an already screen-off boot state, WITHOUT entry debounce.
+During late initialization, the controller allocates its workqueue, claims
+scheduler ownership and synchronously applies the latest effective profile
+BEFORE publishing its sysfs group. A panel OFF/ALPM state published earlier is
+applied immediately, without entry debounce. The scheduler API serializes this
+claim against manual sysctl writes. No sysfs reader sees a partly admitted
+default-on state. A runtime write of 1 uses the same path to claim ownership and
+apply the current profile after an explicit disable or a recoverable failure.
 Only successful completion sets auto_pelt=1. Subsequent publications are handled
 asynchronously. Duplicate 1 does not reset deadlines or force pending work;
 a repeated 1 after an error retries the current request synchronously.
@@ -137,11 +145,13 @@ Failure/lifetime rules
   periodic retry. Failed RELEASE retains enabled ownership; writing 0 retries.
 * Worker allocation failure leaves profile/manual controls usable, auto_pelt=0,
   ready=0/error=ENOMEM; enabling fails. Allocation is not retried until reboot.
-* A failed global sysfs group setup gates publication, cancels work synchronously
-  and destroys the workqueue. auto_pelt is the LAST regular attribute and there
-  are no binary attributes: fs/sysfs/group.c has no failing step after that final
-  file succeeds, so no automatic store/admission can have existed on this error
-  path. No runtime unload path is invented for this bool/built-in manager.
+* A failed global sysfs group setup first releases automatic ownership and
+  restores 2x through the serialized scheduler API. It then gates publication,
+  cancels work synchronously and destroys the workqueue. auto_pelt is the LAST
+  regular attribute and there are no binary attributes: fs/sysfs/group.c has no
+  failing step after that final file succeeds, so no userspace auto_pelt store
+  can have existed on this error path. No runtime unload path is invented for
+  this bool/built-in manager.
 * Disable cannot abandon an admitted transition or a stack-backed asynchronous
   object (none exists). The worker takes the same control mutex and exits after
   observing disabled state. Freezable work follows kernel suspend/thaw semantics;
@@ -179,12 +189,15 @@ Run from the kernel root:
   python3 tools/pragmatic/test_pelt_cutover.py
   python3 tools/pragmatic/test_band_age.py
   python3 tools/pragmatic/test_profiles.py
-The automatic harness also runs the cutover suite, injected pre-admission errors,
+The automatic harness also runs the cutover suite, default-on startup with
+normal and OFF display states, worker/claim/sysfs initialization failures,
+ownership before sysfs visibility, injected pre-admission errors,
 mid-cutover profile updates, racing disable, concurrent manual/mode writes,
 10000 rapid display/user cycles, timer wrap, initialization failure/cleanup and
 diagnostic-disabled/epoch behavior. Full Clang 20 ThinLTO and release conditional
 compilation are required in addition. CONFIG_SCHED_DEBUG must NOT gate the PELT
-sysctl. No debug options are enabled merely to expose it. No phone was accessed.
+sysctl. No debug options are enabled merely to expose it. This default-on boot
+change has not been exercised on a device by this test suite.
 
 Controlled rooted Note9 checks (not executed here)
 -------------------------------------------------
@@ -192,13 +205,11 @@ Controlled rooted Note9 checks (not executed here)
   M=/proc/sys/kernel/sched_pelt_multiplier
   D=/sys/kernel/debug/pragmatic_diag
   cat "$P/auto_pelt" "$P/pelt_control" "$P/pelt_multiplier"
-  # Fresh boot: 0, external, 2
-  echo 0 > "$P/auto_pelt"
-  echo 2 > "$M"
-  echo optimal > "$P/profile"
+  # Successful normal/unknown boot: 1, automatic, 2
+  # A boot already in ALPM/OFF may report 1 as the completed multiplier.
+  cat "$P/pelt_status"
   echo 1 > "$D/enabled"          # optional; requires debugfs mounted
-  echo 1 > "$P/auto_pelt"
-  cat "$P/auto_pelt" "$P/pelt_status"
+  echo optimal > "$P/profile"
   echo powersave > "$P/profile"
   sleep 1
   cat "$P/profile" "$P/active_profile" "$P/requested_pelt_multiplier"
@@ -223,4 +234,5 @@ replace actual audio/wakeup latency measurements. Then restore known-good mode:
   echo optimal > "$P/profile"
   echo 0 > "$D/enabled"
   cat "$P/auto_pelt" "$P/pelt_control" "$M"  # 0, external, 2
-Automatic control stays opt-in until real Note9 concurrency/latency validation.
+Default-on boot ordering still needs direct Note9 validation in this release;
+the earlier runtime-enabled controller has already been exercised on device.

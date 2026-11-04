@@ -248,6 +248,6 @@ runtime validation items. Compilation and host tests do not establish those.
 
 Adaptive profile extensions
 ---------------------------
-See pragmatic-profiles.txt for the profile/display snapshot, added global and
-per-policy hysteresis counters, timer-origin commit accounting, and the explicit
-limitation on automatic PELT switching. The original controls remain unchanged.
+See pragmatic-profiles.txt and pragmatic-auto-pelt.txt for the profile/display
+snapshot, hysteresis counters, timer-origin commit accounting and automatic
+PELT controller status. The original diagnostic controls remain unchanged.

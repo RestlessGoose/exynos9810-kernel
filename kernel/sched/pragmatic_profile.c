@@ -161,7 +161,7 @@ static const struct attribute_group profile_group = { .attrs = profile_attrs };
 static int __init pr_profile_init(void)
 {
 	struct kobject *kobj;
-	int ret;
+	int ret, auto_ret;
 
 	if (!cpufreq_global_kobject)
 		return -ENODEV;
@@ -169,8 +169,17 @@ static int __init pr_profile_init(void)
 	if (!kobj)
 		return -ENOMEM;
 	pr_pelt_init();
+	/* Claim and settle the current profile before auto_pelt becomes visible. */
+	auto_ret = pr_pelt_set_auto(true);
+	if (auto_ret)
+		pr_warn("pragmatic: automatic PELT init failed: %d\n", auto_ret);
 	ret = sysfs_create_group(kobj, &profile_group);
 	if (ret) {
+		/* A successful claim must be released before its worker is freed. */
+		if (WARN_ON_ONCE(pr_pelt_set_auto(false))) {
+			kobject_put(kobj);
+			return ret;
+		}
 		pr_pelt_init_failed();
 		kobject_put(kobj);
 	}
