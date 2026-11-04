@@ -3,9 +3,10 @@ Pragmatic adaptive profiles (Exynos9810, Linux 4.9)
 
 Implemented: global requested/effective profiles, authoritative Samsung panel
 state publication, selective upward hysteresis and conservative credit refill.
-Automatic PELT switching is opt-in and DISABLED by default. With auto_pelt=0,
-profiles report intent without changing the scheduler. See pragmatic-auto-pelt.txt
-for the scheduler ownership/worker design and controlled test instructions.
+Automatic PELT switching is enabled after successful controller initialization.
+With auto_pelt=0, profiles report intent without changing the scheduler. See
+pragmatic-auto-pelt.txt for the scheduler ownership/worker design and controlled
+test instructions.
 No RT bandwidth, vendor policy, thermal, OCP, firmware or Power Envelope changes.
 
 Global interface
@@ -18,7 +19,7 @@ Global interface
   requested_pelt_multiplier  0444: 2 / 1 / 1; intent while auto_pelt=0
   pelt_multiplier            0444: actual existing scheduler sysctl value
   pelt_control               0444: external / automatic
-  auto_pelt                  0644: 0 / 1; default 0
+  auto_pelt                  0644: 0 / 1; default 1 after successful init
   pelt_status                0444: phase, readiness, completed state/error/timing
 
 Example (root):
@@ -42,7 +43,7 @@ minor upward hold      none       4000 us          8000 us
 maximum small rise     n/a        one OPP          two OPPs
 urgent utilization     n/a        >=60%            >=60%
 credit refill          100%       80%              60%
-requested PELT          2x         1x               1x (opt-in application)
+requested PELT          2x         1x               1x (automatic application)
 
 Original up/down spacing is unchanged (5000/3000 us unless the existing interface
 changes it). Existing energy-aware frequency selection is unchanged. Optimal
@@ -159,7 +160,7 @@ Documentation/scheduler/crowntrail-pelt-foundation.txt and
 Documentation/scheduler/crowntrail-pelt-cutover.txt. Both manual and automatic
 requests now share scheduler ownership serialization and that same cutover.
 
-Automatic control remains off until explicitly enabled. The separate permanent
+Automatic control starts during late initialization. The separate permanent
 controller follows effective-profile intent without changing frequency policy
 constants, resetting utilization, or depending on a governor policy lifetime.
 See pragmatic-auto-pelt.txt for debounce, errors, synchronization and limitations.

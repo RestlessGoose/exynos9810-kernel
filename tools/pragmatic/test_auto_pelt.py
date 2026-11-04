@@ -59,6 +59,26 @@ static bool cancel_delayed_work(struct delayed_work *w){bool p=w->pending;w->pen
 static void destroy_workqueue(struct workqueue_struct *q){q->destroyed=true;destroys++;}
 struct kobject { int unused; };struct kobj_attribute { int unused; };
 static bool sysfs_streq(const char *a,const char *b){size_t n=strlen(a);return !strcmp(a,b)||(n&&a[n-1]=='\n'&&n==strlen(b)+1&&!strncmp(a,b,n-1));}
+static struct kobject root_kobj, profile_kobj;
+static struct kobject *cpufreq_global_kobject=&root_kobj;
+static int profile_group, group_calls, kobject_puts, warnings;
+static bool kobject_fail, group_fail, group_saw_owner;
+static unsigned int group_saw_multiplier;
+static int request(int value);
+static struct kobject *kobject_create_and_add(const char *name,struct kobject *parent){
+ assert(!strcmp(name,"pragmatic")&&parent==&root_kobj);
+ return kobject_fail?NULL:&profile_kobj;
+}
+static int sysfs_create_group(struct kobject *kobj,const void *group){
+ assert(kobj==&profile_kobj&&group==&profile_group);
+ group_calls++;group_saw_owner=sched_pelt_auto_owned();
+ group_saw_multiplier=sysctl_sched_pelt_multiplier;
+ if(group_saw_owner)assert(request(4)==-EBUSY);
+ return group_fail?-ENOMEM:0;
+}
+static void kobject_put(struct kobject *kobj){assert(kobj==&profile_kobj);kobject_puts++;}
+#define pr_warn(...) do { warnings++; } while(0)
+#define WARN_ON_ONCE(c) ({ bool warning=!!(c); assert(!warning); warning; })
 struct pr_diag_stamp { u64 ns; unsigned long epoch; };
 static bool diag_on;
 static u64 timing_clock,clock_reads;
@@ -78,7 +98,7 @@ static int test_control(enum sched_pelt_action action,unsigned int v,bool *chang
 '''
 manager_code = ''.join(fn(manager, name) for name in [
     'pr_profile_publish', 'pr_profile_display', 'profile_store',
-    'auto_pelt_store'])
+    'auto_pelt_store']) + fn(manager.replace('__init ', ''), 'pr_profile_init')
 # Publication expects profile_lock; the production lock order is retained.
 manager_code = 'static DEFINE_RAW_SPINLOCK(profile_lock);\n' + manager_code
 main = r'''
@@ -115,13 +135,50 @@ static void disable_during_cutover(pthread_mutex_t *lock){
  while(!atomic_load(&disable_started)){} /* host-only interleaving barrier */
  pr_profile_display(PR_DISPLAY_NORMAL);
 }
-int main(void){
+int main(int argc,char **argv){
  for(int i=0;i<NR;i++){assert(!pthread_mutex_init(&queues[i].lock,NULL));queues[i].cpu=i;samples[i]=1000;}
- expect(2,false);assert(!pr_pelt_auto_enabled());
- alloc_fail=true;pr_pelt_init();assert(automatic("1")==-ENOMEM);expect(2,false);
- pr_pelt_init_failed();assert(!request(4));assert(!request(2));alloc_fail=false;pr_pelt_init();
+ expect(2,false);
+ if(argc>1){
+  if(!strcmp(argv[1],"no-cpufreq")){
+   cpufreq_global_kobject=NULL;assert(pr_profile_init()==-ENODEV);
+   expect(2,false);assert(!group_calls&&!pelt_wq);return 0;
+  }
+  if(!strcmp(argv[1],"no-kobject")){
+   kobject_fail=true;assert(pr_profile_init()==-ENOMEM);
+   expect(2,false);assert(!group_calls&&!pelt_wq);return 0;
+  }
+  if(!strcmp(argv[1],"no-worker")){
+   alloc_fail=true;assert(!pr_profile_init());expect(2,false);
+   assert(group_calls==1&&!group_saw_owner&&warnings==1&&last_error==-ENOMEM);
+   assert(!request(4));assert(automatic("1")==-ENOMEM);return 0;
+  }
+  if(!strcmp(argv[1],"claim-fail")){
+   fail_next=true;assert(!pr_profile_init());expect(2,false);
+   assert(group_calls==1&&!group_saw_owner&&warnings==1&&last_error==-EIO);
+   assert(!request(4));assert(automatic("1")==1);expect(2,true);return 0;
+  }
+  if(!strcmp(argv[1],"no-sysfs")){
+   pr_profile_display(PR_DISPLAY_OFF);group_fail=true;
+   assert(pr_profile_init()==-ENOMEM);expect(2,false);
+   assert(group_calls==1&&group_saw_owner&&group_saw_multiplier==1);
+   assert(kobject_puts==1&&destroys==1&&!pelt_wq);
+   assert(!request(4));return 0;
+  }
+  if(!strcmp(argv[1],"off-at-boot")){
+   pr_profile_display(PR_DISPLAY_OFF);assert(!pr_profile_init());expect(1,true);
+   assert(group_saw_owner&&group_saw_multiplier==1);
+   assert(automatic("0")==1);expect(2,false);assert(!request(4));return 0;
+  }
+  if(!strcmp(argv[1],"preclaim-manual")){
+   assert(!request(4));assert(!pr_profile_init());expect(2,true);
+   assert(group_saw_owner&&group_saw_multiplier==2);
+   assert(automatic("0")==1);expect(2,false);return 0;
+  }
+  assert(0&&"unknown boot scenario");
+ }
+ assert(!pr_profile_init());expect(2,true);
+ assert(group_calls==1&&group_saw_owner&&group_saw_multiplier==2&&!warnings);
  assert(automatic("true")==-EINVAL&&automatic("2")==-EINVAL&&automatic("-1")==-EINVAL);
- assert(automatic("1")==1);expect(2,true);
  assert(request(1)==-EBUSY&&request(2)==-EBUSY&&request(4)==-EBUSY);
  unsigned int reads=samples_read;assert(automatic("1\n")==2);assert(samples_read==reads);
  {struct ctl_table t={&sysctl_sched_pelt_multiplier,sizeof(unsigned int)};unsigned int v=0;size_t n=sizeof(v);loff_t pos=0;assert(!sched_pelt_multiplier(&t,0,&v,&n,&pos)&&v==2);}
@@ -178,6 +235,7 @@ int main(void){
  pr_pelt_init_failed();assert(destroys==1&&!pelt_wq&&!pelt_work.pending);
  unsigned int queued=submissions;pr_profile_display(PR_DISPLAY_NORMAL);assert(submissions==queued);
  assert(automatic("1")==-ENODEV);expect(2,false);
+ puts("PASS default-on boot, ownership before sysfs visibility, manual writes blocked, failed startup recovery and rollback");
  puts("PASS actual automatic controller/manager/scheduler: mapping, ownership, enable/disable/errors, debounce supersession, mid-cutover publications, racing disable, 10000 rapid display/user cycles, init failure/cleanup, diag-disabled timing and epoch reset");
  puts("LIMIT: workqueue/freezer/hotplug and panel execution are simulated; real kernel concurrency and phone latency remain unverified");
  return 0;
@@ -193,4 +251,7 @@ with tempfile.TemporaryDirectory(prefix='crowntrail-auto-pelt-') as directory:
     subprocess.run(['cc', '-std=gnu11', '-O2', '-pthread', '-Wall', '-Wextra',
                     '-Werror', '-Wno-unused-parameter', '-Wno-unused-function',
                     str(source), '-o', str(binary)], check=True)
+    for scenario in ['no-cpufreq', 'no-kobject', 'no-worker', 'claim-fail',
+                     'no-sysfs', 'off-at-boot', 'preclaim-manual']:
+        subprocess.run([str(binary), scenario], check=True, timeout=60)
     subprocess.run([str(binary)], check=True, timeout=60)

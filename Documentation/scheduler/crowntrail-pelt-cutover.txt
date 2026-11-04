@@ -3,11 +3,12 @@ CrownTrail per-runqueue PELT multiplier cutover
 
 Scope and interface
 -------------------
-This describes the manual foundation. The later opt-in owner/controller is
-documented in Documentation/cpu-freq/pragmatic-auto-pelt.txt; default remains off.
+This describes the manual foundation. The later automatic owner/controller is
+documented in Documentation/cpu-freq/pragmatic-auto-pelt.txt; it defaults on
+after successful late initialization.
 
 This extends the foundation commits 571b6c7a44bd and 6df69e3ff800. It changes
-manual runtime switching only. Default remains 2x. The later opt-in integration
+manual runtime switching only. The scheduler starts at 2x. Later automatic integration
 adds profile-driven control without changing this cutover mechanism.
 
 Existing control:

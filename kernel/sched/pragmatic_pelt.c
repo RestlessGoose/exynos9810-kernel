@@ -228,9 +228,9 @@ void __init pr_pelt_init(void)
 	raw_spin_unlock_irqrestore(&pelt_lock, flags);
 }
 
-/* Only failed sysfs initialization: auto_pelt is the LAST created attribute,
- * so it cannot have been writable if create_group failed. No live ownership
- * or admitted transition exists. Gate publishers before draining/freeing.
+/* Only failed sysfs initialization, after automatic ownership was released:
+ * auto_pelt is the LAST created attribute, so it cannot have been writable if
+ * create_group failed. Gate publishers before draining/freeing.
  */
 void __init pr_pelt_init_failed(void)
 {
