@@ -43,9 +43,9 @@ CONFIG_IKHEADERS=y
 #
 CONFIG_INCREMENTAL_FS=y
 
-# Brightness mod for OneUI7
+# Brightness mod
 
-# CONFIG_ONEUI7_WORKAROUND is not set
+CONFIG_DUHANROM_BRIGHTNESS=y
 
 # CrownTrail Features
 
