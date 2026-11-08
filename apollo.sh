@@ -80,7 +80,7 @@ CR_CLEAN="n"
 CR_SPOOF4BPF="1"
 # Default Compilation
 DEFAULT_TARGET=3   # crownlte
-DEFAULT_COMPILER=3 # clang18
+DEFAULT_COMPILER=3 # clang20
 DEFAULT_SELINUX=2  # enforce
 DEFAULT_KSU=y      # enabled
 DEFAULT_CLEAN=n    # dirty
@@ -106,12 +106,12 @@ CR_CLANG_URL=https://android.googlesource.com/platform/prebuilts/clang/host/linu
 CR_CLANG=$CR_TC/clang-14.0.4-r450784
 fi
 if [ $CR_COMPILER = "3" ]; then
-CR_CLANG_URL=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/llvm-r522817/clang-r522817.tar.gz
-CR_CLANG=$CR_TC/clang-18.0.1-r522817
-fi
-if [ $CR_COMPILER = "4" ]; then
 CR_CLANG_URL=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz
 CR_CLANG=$CR_TC/clang-20.0.0-r547379
+fi
+if [ $CR_COMPILER = "4" ]; then
+CR_CLANG_URL=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/mirror-goog-main-llvm-toolchain-source/clang-r614150.tar.gz
+CR_CLANG=$CR_TC/clang-23.0.1-r614150
 fi
 if [ $CR_COMPILER = "5" ]; then
 CR_CLANG_URL=https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/05012024/neutron-clang-05012024.tar.zst
@@ -552,7 +552,7 @@ CR_KSU="y"
 CR_CLEAN="n"
 echo " DEBUG : Set Build options "
 echo " DEBUG : Variant  : $CR_VARIANT_N960F"
-echo " DEBUG : Compiler : Clang 18"
+echo " DEBUG : Compiler : Clang 20"
 echo " DEBUG : Selinux  : $CR_SELINUX Enforcing"
 echo " DEBUG : Clean    : $CR_CLEAN"
 echo "----------------------------------------------"
@@ -656,8 +656,8 @@ echo "----------------------------------------------"
 echo " "
 echo "1) Google Clang 12 (LLVM +LTO)"
 echo "2) Google Clang 14 (LLVM +LTO)"
-echo "3) Google Clang 18 (LLVM +LTO PGO Bolt MLGO Polly)"
-echo "4) Google Clang 20 (LLVM +LTO PGO Bolt MLGO Polly)"
+echo "3) Google Clang 20 (LLVM +LTO PGO Bolt MLGO Polly)"
+echo "4) Google Clang 23 (LLVM +LTO PGO Bolt MLGO Polly)"
 echo "5) Neutron Clang 18 (^)"
 echo "6) Neutron Clang 19 (^)"
 echo "7) Neutron Clang 20 (BETA)"

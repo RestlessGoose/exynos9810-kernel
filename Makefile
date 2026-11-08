@@ -551,9 +551,6 @@ KBUILD_AFLAGS   += -march=armv8-a+crypto+crc -mcpu=exynos-m3 -mtune=exynos-m3
 KBUILD_LDFLAGS  += -mllvm -march=armv8-a+crypto+crc\
         -mllvm -mcpu=exynos-m3 \
 
-KBUILD_CFLAGS  += -mfloat-abi=hard
-KBUILD_AFLAGS  += -mfloat-abi=hard
-KBUILD_LDFLAGS  += -mllvm -float-abi=hard
 
 
 ifeq ($(cc-name),clang)
@@ -802,7 +799,6 @@ KBUILD_CFLAGS	+= -mllvm -aggressive-ext-opt \
            -mllvm -enable-cse-in-irtranslator \
            -mllvm -enable-cse-in-legalizer \
            -mllvm -scalar-evolution-use-expensive-range-sharpening \
-           -mllvm -loop-rotate-multi \
            -mllvm -enable-interleaved-mem-accesses \
            -mllvm -enable-masked-interleaved-mem-accesses \
            -mllvm -enable-gvn-hoist \
