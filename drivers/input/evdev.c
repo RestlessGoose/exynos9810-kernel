@@ -1459,15 +1459,25 @@ static struct input_handler evdev_handler = {
 
 static int __init evdev_init(void)
 {
+	int err;
+
 #ifdef CONFIG_SEC_INPUT_BOOSTER
 	input_booster_init();
 #endif
-	return input_register_handler(&evdev_handler);
+	err = input_register_handler(&evdev_handler);
+#ifdef CONFIG_SEC_INPUT_BOOSTER
+	if (err)
+		input_booster_exit();
+#endif
+	return err;
 }
 
 static void __exit evdev_exit(void)
 {
 	input_unregister_handler(&evdev_handler);
+#ifdef CONFIG_SEC_INPUT_BOOSTER
+	input_booster_exit();
+#endif
 }
 
 module_init(evdev_init);

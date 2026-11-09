@@ -1,4 +1,8 @@
 #include <linux/input/input_booster.h>
+#include <linux/init.h>
+#include <linux/mutex.h>
+#include <linux/plist.h>
+#include <linux/pm_qos.h>
 #include <linux/exynos-ucc.h>
 #include <linux/ems_service.h>
 
@@ -11,8 +15,8 @@ static struct ucc_req ucc_req = {
 };
 
 static DEFINE_MUTEX(input_lock);
-bool current_hmp_boost = INIT_ZERO;
-bool current_ucc_boost = INIT_ZERO;
+static bool current_hmp_boost;
+static int current_ucc_boost;
 static struct kpp kpp_ta;
 static struct kpp kpp_fg;
 
@@ -21,19 +25,19 @@ struct inform {
     void (*set_func)(int);
     int release_value;
 };
-struct inform informations[MAX_RES_COUNT];
+static struct inform informations[IB_VENDOR_RES_COUNT];
 
 void set_ucc(int enable)
 {
 	mutex_lock(&input_lock);
 
 	if (enable != current_ucc_boost) {
-		pr_booster("[Input Booster2] ******      set_ucc : %d ( %s )\n", enable, __FUNCTION__);
-		if (enable) {
+		if (!current_ucc_boost && enable)
 			ucc_add_request(&ucc_req, enable);
-		} else {
+		else if (enable)
+			ucc_update_request(&ucc_req, enable);
+		else
 			ucc_remove_request(&ucc_req);
-		}
 		current_ucc_boost = enable;
 	}
 
@@ -45,8 +49,7 @@ void set_hmp(int enable)
 {
 	mutex_lock(&input_lock);
 
-	if (enable != current_hmp_boost) {
-		pr_booster("[Input Booster2] ******      set_ehmp : %d ( %s )\n", enable, __FUNCTION__);
+	if (!!enable != current_hmp_boost) {
 		if (enable) {
 			kpp_request(STUNE_TOPAPP, &kpp_ta, 1);
 			kpp_request(STUNE_FOREGROUND, &kpp_fg, 1);
@@ -65,8 +68,7 @@ void ib_set_booster(int *qos_values)
 	int value = -1;
 	int res_type = 0;
 
-	for (res_type = 0; res_type < MAX_RES_COUNT; res_type++) {
-		pr_info(" ib_set_booster qos_values[%d] : %d", res_type, qos_values[res_type]);
+	for (res_type = 0; res_type < IB_VENDOR_RES_COUNT; res_type++) {
 		value = qos_values[res_type];
 
 		if (value <= 0)
@@ -74,7 +76,7 @@ void ib_set_booster(int *qos_values)
 
 		if (informations[res_type].qos) {
 			pm_qos_update_request(informations[res_type].qos, qos_values[res_type]);
-		} else {
+		} else if (informations[res_type].set_func) {
 			informations[res_type].set_func(qos_values[res_type]);
 		}
 	}
@@ -82,13 +84,13 @@ void ib_set_booster(int *qos_values)
 
 void ib_release_booster(int res_id)
 {
+	if (res_id < 0 || res_id >= IB_VENDOR_RES_COUNT)
+		return;
 	if (informations[res_id].qos) {
 		pm_qos_update_request(informations[res_id].qos, informations[res_id].release_value);
-	} else {
+	} else if (informations[res_id].set_func) {
 		informations[res_id].set_func(informations[res_id].release_value);
 	}
-
-	pr_info("ib_release_booster %d value : %d", res_id, informations[res_id].release_value);
 }
 
 void input_booster_init_vendor(int *release_val)
@@ -106,13 +108,15 @@ void input_booster_init_vendor(int *release_val)
 	informations[i++].set_func = set_hmp;
 	informations[i++].set_func = set_ucc;
 
-	for (i = 0; i < MAX_RES_COUNT; i++) {
+	for (i = 0; i < IB_VENDOR_RES_COUNT; i++) {
 		informations[i].release_value = release_val[i];
 	}
 }
 
 void input_booster_exit_vendor(void)
 {
+	set_hmp(0);
+	set_ucc(0);
 	pm_qos_remove_request(&cluster1_qos);
 	pm_qos_remove_request(&cluster0_qos);
 	pm_qos_remove_request(&mif_qos);
