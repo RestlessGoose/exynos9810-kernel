@@ -1,0 +1,186 @@
+CrownTrail v1.8 input-booster controls
+====================================
+
+The generic input booster and top-edge staircase are enabled by default.
+The top-edge booster reuses the input_booster handler and its working
+sec_touchscreen initial-contact detector. No init script is required. Physical top-8% contacts qualify immediately;
+moving an existing contact into that region never qualifies it. Use portrait
+for initial testing; Android display rotation is not visible to this detector.
+
+Device matching is deliberately limited to the main sec_touchscreen interface
+with direct, slot-based multitouch X/Y capabilities; sec_touchpad is excluded.
+S9/S9+ select drivers/input/touchscreen/sec_ts/sec_ts.c and Note9 selects
+sec_ts/y771/sec_ts.c. Both drivers publish this name, INPUT_PROP_DIRECT, MT
+slots and position ranges. This establishes source compatibility; actual S9/S9+
+validation should still check touchscreens=1 and trigger/release counters.
+
+Each cluster has its own persistent Samsung PM QoS minimum request. This is a
+minimum staircase: normal DVFS may run above it, and existing maximum QoS,
+thermal and OCP protections remain effective. No voltage or protection changes.
+
+The optional 2314 MHz spike is OFF by default. This frequency is known to be
+unstable under some quad-core workloads on the test device. A requested 20 ms
+window is not a hard hardware residency guarantee: delayed work scheduling,
+jiffy rounding and synchronous DVFS calls can extend it. Existing protection
+mechanisms cannot guarantee silicon stability. Validate without the spike first.
+
+All controls: /sys/class/input_booster/
+  enable_event              0/1 (default 1 after successful boot setup)
+  top_edge_enable           0/1 (default 1 after successful boot setup)
+  top_edge_region_percent   1..25 (default 8)
+  top_edge_profile          0 = original two-stage fallback, 1 = staircase (default)
+  top_edge_spike_enable     0/1 (default 0, used only by staircase)
+  top_edge_spike_khz        default 2314000
+  top_edge_spike_ms         default 20
+  top_edge_plateau_ms       default 150
+  top_edge_decay_ms         default 250
+  top_edge_hold_ms          default 60
+  top_edge_stage1_big_khz   default 2106000 (plateau/start of decay)
+  top_edge_stage1_little_khz default 1690000
+  top_edge_stage2_big_khz   default 1586000 (end of decay)
+  top_edge_stage2_little_khz default 1456000
+  top_edge_stage1_ms        default 220, fallback only
+  top_edge_stage2_ms        default 300, fallback only
+  top_edge_schedule         read-only configured plan: ms, big_khz, little_khz, phase
+  top_edge_stats            read-only counters/timestamps
+
+Durations accept 1..1000 ms. Frequencies must be exact live policy-table entries,
+not above 2314000 big or 1950000 little. Invalid writes return EINVAL; missing
+policies return EAGAIN. Decay requires big_end < big_start, little_end <= start,
+and an enabled spike >= plateau. New settings are validated as a complete plan
+before publication. Excessive table size returns E2BIG without changing state.
+
+The real tables are inspected in process context on configuration/enable, not
+on touch. Every valid intermediate frequency is scheduled at
+  plateau_end + ceil((start - frequency) * decay_ms / (start - end)).
+Big and little deadlines are merged. Equal deadlines select the lower floor.
+There are at most 64 points including phase boundaries and release. With the
+expected tables and spike enabled, the big schedule is:
+  0:2314, 20:2106, 170:2106, 220:2002, 258:1924, 320:1794,
+  370:1690, 420:1586, 480:release (ms:MHz).
+With spike disabled, omit its first point and subtract 20 ms from the others:
+  0:2106, 150:2106, 200:2002, 238:1924, 300:1794, 350:1690,
+  400:1586, 460:release.
+The default release deadline is still detection + 460 ms: 150 + 250 + 60.
+Enabling the optional 20 ms spike moves release to detection + 480 ms. These
+are schedule deadlines, subject to the execution latency described above.
+The little schedule includes whatever actual entries exist between 1690 and
+1456 MHz. If none exist, it stays at 1690 until the decay endpoint. Inspect
+schedule after boot initialization or a successful setting write. Before
+initialization it is empty.
+
+Boot activation and controls
+----------------------------
+The runtime enable flags start false while resources are initialized by evdev.
+A late initcall runs after ACME's device initcall and before userspace starts.
+It registers the generic input handler, then validates the live policy0/policy4
+tables and publishes a complete top-edge plan before enabling it. Both paths
+reuse the same helpers as sysfs enable, with enable_lock -> top_control_lock.
+Devices already probed are connected during registration; later devices connect
+through the input core normally. No high floor is requested until real input.
+Panel NORMAL publication is still required when Pragmatic is compiled.
+
+Table lookup tries each CPU in a cluster, so an offline representative CPU
+does not hide an otherwise live sibling policy. If the entire cluster policy
+is unavailable, validation fails safely.
+
+If generic registration fails, neither feature is reported enabled. If top-edge
+resource setup or table validation fails, generic boosting can remain enabled
+but top_edge_enable stays zero; dmesg reports 'boot defaults incomplete' and an
+error. No background retry can unexpectedly undo a later user disable. Once
+the failure is resolved, explicit sysfs enable retries the same validated path.
+This boot sequence is validated for the built-in evdev/booster configuration
+used by Apollo crownlte; it is not a module-load lifecycle design.
+
+Check after boot (root shell):
+  B=/sys/class/input_booster
+  cat $B/enable_event $B/top_edge_enable $B/top_edge_spike_enable
+  # Expected: 1, 1, 0
+  cat $B/top_edge_schedule
+  cat $B/top_edge_stats
+  getenforce
+  # Expected on the tester ROM: Enforcing
+  dmesg | grep input_booster
+
+Disabling top_edge_enable drains only the top-edge feature. Disabling
+enable_event drains both boosters and unregisters the input handler. A later
+enable_event=1 restores only generic boosting; write top_edge_enable=1 too
+when explicitly restoring both. Next boot again attempts the compiled defaults.
+Generic debugfs diagnostic counter collection remains disabled by default.
+
+A run copies its immutable plan under a spinlock. Changes during a run affect
+the next activation. Disable first to change a group of settings together.
+The ordered high-priority worker chooses the latest point by elapsed time from
+detection; late work skips overdue points instead of executing a burst of stale
+requests. Already-expired activations install no floors. No per-step allocation,
+table lookup, polling or logging. A held finger or extra contacts cannot extend
+a run. There is a fixed 100 ms cooldown after release. Disable/suspend/teardown
+drain the apply and delayed work and release both own requests. PM resume does
+not replay a previous gesture. No worker acquires the control mutex held during
+cancellation. Releasing this feature does not remove other clients' QoS floors.
+
+requested_big_khz/requested_little_khz show this feature's own requested floors,
+independently of the aggregated effective floors.
+
+Phases in staircase stats: 0 idle, 1 spike, 2 plateau, 3 decay, 4 final hold.
+Fallback uses 1/2 for its original stages. requests_applied counts initial QoS
+updates, stage_transitions counts subsequent non-release points, and
+requests_completed counts releases (including forced disable/suspend).
+frequency_reached counts activations whose initial requested big floor was
+confirmed. frequency_reached_ns is that first confirmation, retained after
+release. With the spike applied, failure to reach 2314 during the brief spike
+is visible even if later lower floors are reached.
+These are cpufreq reports, not independent hardware clock telemetry.
+detected_ns is activation time. request_begin_ns/request_applied_ns bracket the
+first pair of QoS calls. stage2_request_ns is the last subsequent point's request
+time (including release); released_ns follows both floor releases. Both clock
+samples are updated per point. Snapshots may span a transition. For precise
+little-cluster reach timing, use cpu_frequency tracing or short device samples.
+
+Controlled test (root shell):
+  B=/sys/class/input_booster
+  cat /sys/devices/system/cpu/cpufreq/policy0/scaling_available_frequencies
+  cat /sys/devices/system/cpu/cpufreq/policy4/scaling_available_frequencies
+  echo 1 > $B/enable_event
+  echo 0 > $B/top_edge_enable
+  echo 1 > $B/top_edge_profile
+  echo 0 > $B/top_edge_spike_enable
+  echo 150 > $B/top_edge_plateau_ms
+  echo 250 > $B/top_edge_decay_ms
+  echo 60 > $B/top_edge_hold_ms
+  echo 1 > $B/top_edge_enable
+  cat $B/top_edge_schedule
+  cat $B/top_edge_stats
+
+Release configuration recommendation: keep top_edge_spike_enable=0. Use the validated
+2106/1586 MHz endpoints and modest durations; do not treat a frequency minimum
+as a maximum cap. For safe multi-setting updates, disable the feature first,
+write the settings, inspect top_edge_schedule, then re-enable. A previously
+configured userspace tuning script can override these compiled defaults; update
+such scripts to 150/250/60 if this release profile is intended. Keep the proven
+profile=0 fallback available when comparing responsiveness or battery use.
+
+Keep ShadeFlingFix, logging experiment state, Pragmatic profile, orientation,
+thermal state and workload fixed. Record eight fast and eight slow gestures
+for each: booster off; profile=0 proven fallback; profile=1 spike off. Compare
+opening doFrame CPU/wall time, first presentation, input/RenderThread duration,
+frequency at first frame and frame deadline misses. Repeat in alternating order.
+Only after that, optionally test spike_enable=1. Verify the schedule and actual
+frequency trace; the spike may be skipped if the initial worker runs late.
+A temporary floor is not proven equivalent to locked 2314 MHz operation.
+
+For short device-side sampling (the sampling adds load):
+  for i in $(seq 1 100); do
+    cat $B/top_edge_stats
+    sleep 0.02
+  done > /data/local/tmp/top-edge-samples.txt
+
+Test long holds, slot reuse, multitouch, rapid gestures, disable during each
+phase, settings changes mid-run and suspend/resume. Expect stage 0 and released
+own floors afterward. Read effective floors and policy clocks; other QoS clients
+may still hold them above zero. Check dmesg for warnings. Roll back with:
+  echo 0 > $B/top_edge_enable
+  echo 0 > $B/top_edge_spike_enable
+  echo 0 > $B/top_edge_profile
+  echo 1 > $B/top_edge_enable
+Or leave top_edge_enable=0 to remove the feature's floors entirely.
