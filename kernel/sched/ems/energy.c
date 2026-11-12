@@ -213,6 +213,10 @@ static int find_min_util_cpu(const struct cpumask *mask, struct task_struct *p)
 		unsigned long new_util = ml_task_attached_cpu_util(cpu, p);
 
 		new_util = max(new_util, ml_boosted_task_util(p));
+#ifdef CONFIG_UCLAMP_TASK
+		/* USS performance floor; retain the measured load. */
+		new_util = max(new_util, uclamp_eff_value(p, UCLAMP_MIN));
+#endif
 		/* Skip over-capacity cpu */
 		if (new_util >= capacity_orig)
 			continue;

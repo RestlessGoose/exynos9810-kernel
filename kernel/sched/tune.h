@@ -48,8 +48,14 @@ int schedtune_accept_deltas(int nrg_delta, int cap_delta,
 #define schedtune_cpu_boost(cpu)  0
 #define schedtune_task_boost(tsk) 0
 
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+/* Preserve EMS hint entry points without restoring schedtune accounting. */
+#define schedtune_prefer_idle(tsk) uclamp_latency_sensitive(tsk)
+#define schedtune_prefer_perf(tsk) uclamp_boosted(tsk)
+#else
 #define schedtune_prefer_idle(tsk) 0
 #define schedtune_prefer_perf(tsk) 0
+#endif
 #define schedtune_util_est_en(tsk) 0
 #define schedtune_ontime_en(tsk) 0
 

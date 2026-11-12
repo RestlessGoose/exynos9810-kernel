@@ -100,6 +100,10 @@ static int select_idle_cpu(struct task_struct *p)
 
 			new_util = ml_task_attached_cpu_util(i, p);
 			new_util = max(new_util, ml_boosted_task_util(p));
+#ifdef CONFIG_UCLAMP_TASK
+			/* USS performance floor; retain the measured load. */
+			new_util = max(new_util, uclamp_eff_value(p, UCLAMP_MIN));
+#endif
 
 			trace_ems_prefer_idle(p, task_cpu(p), i, capacity_orig, ml_task_util_est(p),
 							new_util, idle_cpu(i));
