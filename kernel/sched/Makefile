@@ -31,3 +31,5 @@ obj-$(CONFIG_CPU_FREQ_GOV_PRAGMATIC) += cpufreq_pragmatic.o pragmatic_diag.o pra
 obj-$(CONFIG_PSI) += psi.o
 obj-$(CONFIG_SCHED_EMS) += ems/
 
+
+obj-$(CONFIG_UCLAMP_TASK) += uclamp_debug.o
