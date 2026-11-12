@@ -795,11 +795,20 @@ static unsigned int pr_shared_freq(struct pragmatic_policy *pp, u64 now)
 						 policy->cpuinfo.max_freq;
 		j_util = pc->util;
 		j_max = pc->max;
+		pr_iowait_apply(pc, &j_util, &j_max);
+		if (uclamp_is_used()) {
+			unsigned long capacity = arch_scale_cpu_capacity(NULL, cpu);
+
+			/* I/O-wait may express its ratio in frequency units. */
+			j_util = div64_u64((u64)j_util * capacity, j_max);
+			j_max = capacity;
+			j_util = min(capacity,
+				     uclamp_util_with(cpu_rq(cpu), j_util, NULL));
+		}
 		if ((u64)j_util * max >= (u64)j_max * util) {
 			util = j_util;
 			max = j_max;
 		}
-		pr_iowait_apply(pc, &util, &max);
 	}
 	if (filtering)
 		pp->profile_util_pct = div64_u64((u64)util * 100, max);
