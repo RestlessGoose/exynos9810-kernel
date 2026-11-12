@@ -362,10 +362,6 @@ static void sugov_get_util(unsigned long *util, unsigned long *max, u64 time)
 	part_cpu_active_ratio(util, max, cpu);
 #endif
 
-#ifdef CONFIG_UCLAMP_TASK
-	*util = uclamp_util_with(rq, *util, NULL);
-	*util = min(*max, *util);
-#endif
 }
 
 #ifdef CONFIG_SCHED_KAIR_GLUE
@@ -446,6 +442,30 @@ static void sugov_iowait_boost(struct sugov_cpu *sg_cpu, unsigned long *util,
 	}
 }
 
+/* Normalize I/O-wait's frequency ratio before applying scheduler clamps. */
+static void sugov_apply_uclamp(int cpu, unsigned long *util, unsigned long *max)
+{
+	unsigned long capacity;
+
+	if (!uclamp_is_used())
+		return;
+	capacity = arch_scale_cpu_capacity(NULL, cpu);
+	*util = div64_u64((u64)*util * capacity, *max);
+	*max = capacity;
+	*util = min(capacity, uclamp_util_with(cpu_rq(cpu), *util, NULL));
+}
+
+static bool sugov_max_is_capped(int cpu)
+{
+#ifdef CONFIG_UCLAMP_TASK
+	return uclamp_is_used() &&
+		READ_ONCE(cpu_rq(cpu)->uclamp[UCLAMP_MAX].value) <
+		arch_scale_cpu_capacity(NULL, cpu);
+#else
+	return false;
+#endif
+}
+
 #ifdef CONFIG_NO_HZ_COMMON
 static bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu)
 {
@@ -483,12 +503,14 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 	} else {
 		sugov_get_util(&util, &max, time);
 		sugov_iowait_boost(sg_cpu, &util, &max);
+		sugov_apply_uclamp(smp_processor_id(), &util, &max);
 		next_f = get_next_freq(sg_policy, util, max);
 		/*
 		 * Do not reduce the frequency if the CPU has not been idle
 		 * recently, as the reduction is likely to be premature then.
 		 */
-		if (busy && next_f < sg_policy->next_freq &&
+		if (busy && !sugov_max_is_capped(smp_processor_id()) &&
+		    next_f < sg_policy->next_freq &&
 		    sg_policy->next_freq != UINT_MAX) {
 			next_f = sg_policy->next_freq;
 
@@ -529,12 +551,13 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 
 		j_util = j_sg_cpu->util;
 		j_max = j_sg_cpu->max;
+		sugov_iowait_boost(j_sg_cpu, &j_util, &j_max);
+		sugov_apply_uclamp(j, &j_util, &j_max);
 		if (j_util * max >= j_max * util) {
 			util = j_util;
 			max = j_max;
 		}
 
-		sugov_iowait_boost(j_sg_cpu, &util, &max);
 	}
 
 	return get_next_freq(sg_policy, util, max);
