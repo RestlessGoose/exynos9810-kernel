@@ -1025,6 +1025,11 @@ enum uclamp_id uclamp_rq_max_value(struct rq *rq, enum uclamp_id clamp_id,
 	return uclamp_idle_value(rq, clamp_id, clamp_value);
 }
 
+static inline void uclamp_rq_inc_id(struct rq *rq, struct task_struct *p,
+				  enum uclamp_id clamp_id);
+static inline void uclamp_rq_dec_id(struct rq *rq, struct task_struct *p,
+				  enum uclamp_id clamp_id);
+
 static void __uclamp_update_util_min_rt_default(struct task_struct *p)
 {
 	unsigned int default_util_min;
@@ -1053,6 +1058,10 @@ static void uclamp_update_util_min_rt_default(struct task_struct *p)
 	/* Protect updates to p->uclamp_* */
 	rq = task_rq_lock(p, &rf);
 	__uclamp_update_util_min_rt_default(p);
+	if (rt_task(p) && task_on_rq_queued(p) && p->sched_class->uclamp_enabled) {
+		uclamp_rq_dec_id(rq, p, UCLAMP_MIN);
+		uclamp_rq_inc_id(rq, p, UCLAMP_MIN);
+	}
 	task_rq_unlock(rq, p, &rf);
 }
 
@@ -1321,7 +1330,10 @@ uclamp_update_active(struct task_struct *p, enum uclamp_id clamp_id)
 	 * affecting a valid clamp bucket, the next time it's enqueued,
 	 * it will already see the updated clamp bucket value.
 	 */
-	if (!p->uclamp[clamp_id].active) {
+	/* Include runnable tasks queued before the static key was enabled.
+	 * dec_id() safely ignores a clamp which has not been accounted yet.
+	 */
+	if (task_on_rq_queued(p) && p->sched_class->uclamp_enabled) {
 		uclamp_rq_dec_id(rq, p, clamp_id);
 		uclamp_rq_inc_id(rq, p, clamp_id);
 	}
@@ -1592,6 +1604,7 @@ static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 
 	update_cpu_active_ratio(rq, p, EMS_PART_ENQUEUE);
 
+	uclamp_rq_inc(rq, p);
 	p->sched_class->enqueue_task(rq, p, flags);
 }
 
@@ -1605,6 +1618,7 @@ static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 
 	update_cpu_active_ratio(rq, p, EMS_PART_DEQUEUE);
 
+	uclamp_rq_dec(rq, p);
 	p->sched_class->dequeue_task(rq, p, flags);
 }
 
@@ -8906,6 +8920,7 @@ void __init sched_init(void)
 	idle_thread_set_boot_cpu();
 	set_cpu_rq_start_time(smp_processor_id());
 #endif
+	init_uclamp();
 	init_sched_fair_class();
 
 	init_schedstats();
@@ -9124,7 +9139,9 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
 	for_each_clamp_id(clamp_id) {
 		uclamp_se_set(&tg->uclamp_req[clamp_id],
 			      uclamp_none(clamp_id), false);
-		tg->uclamp[clamp_id] = parent->uclamp[clamp_id];
+		uclamp_se_set(&tg->uclamp[clamp_id],
+			      min_t(unsigned int, tg->uclamp_req[clamp_id].value,
+				  parent->uclamp[clamp_id].value), false);
 	}
 #endif
 }
@@ -9677,8 +9694,17 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
 	struct task_group *tg = css_tg(css);
 	struct task_group *parent = css_tg(css->parent);
 
-	if (parent)
+	if (parent) {
 		sched_online_group(tg, parent);
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+		/* Reconcile against parent writes racing with group allocation. */
+		mutex_lock(&uclamp_mutex);
+		rcu_read_lock();
+		cpu_util_update_eff(css);
+		rcu_read_unlock();
+		mutex_unlock(&uclamp_mutex);
+#endif
+	}
 	return 0;
 }
 
@@ -9937,7 +9963,7 @@ static int cpu_uclamp_ls_write_u64(struct cgroup_subsys_state *css,
 	if (ls > 1)
 		return -EINVAL;
 	tg = css_tg(css);
-	tg->latency_sensitive = (unsigned int) ls;
+	WRITE_ONCE(tg->latency_sensitive, (unsigned int)ls);
 
 	return 0;
 }
@@ -9947,7 +9973,7 @@ static u64 cpu_uclamp_ls_read_u64(struct cgroup_subsys_state *css,
 {
 	struct task_group *tg = css_tg(css);
 
-	return (u64) tg->latency_sensitive;
+	return (u64)READ_ONCE(tg->latency_sensitive);
 }
 
 static int cpu_uclamp_boost_write_u64(struct cgroup_subsys_state *css,
@@ -9958,7 +9984,7 @@ static int cpu_uclamp_boost_write_u64(struct cgroup_subsys_state *css,
 	if (boosted > 1)
 		return -EINVAL;
 	tg = css_tg(css);
-	tg->boosted = (unsigned int) boosted;
+	WRITE_ONCE(tg->boosted, (unsigned int)boosted);
 
 	return 0;
 }
@@ -9968,53 +9994,9 @@ static u64 cpu_uclamp_boost_read_u64(struct cgroup_subsys_state *css,
 {
 	struct task_group *tg = css_tg(css);
 
-	return (u64) tg->boosted;
+	return (u64)READ_ONCE(tg->boosted);
 }
 
-/* Wrappers for the above {read, write, show} functions */
-int cpu_uclamp_min_show_wrapper(struct seq_file *sf, void *v)
-{
-	return cpu_uclamp_min_show(sf, v);
-}
-int cpu_uclamp_max_show_wrapper(struct seq_file *sf, void *v)
-{
-	return cpu_uclamp_max_show(sf, v);
-}
-
-ssize_t cpu_uclamp_min_write_wrapper(struct kernfs_open_file *of,
-                               char *buf, size_t nbytes,
-                               loff_t off)
-{
-	return cpu_uclamp_min_write(of, buf, nbytes, off);
-}
-ssize_t cpu_uclamp_max_write_wrapper(struct kernfs_open_file *of,
-                               char *buf, size_t nbytes,
-                               loff_t off)
-{
-	return cpu_uclamp_max_write(of, buf, nbytes, off);
-}
-
-int cpu_uclamp_ls_write_u64_wrapper(struct cgroup_subsys_state *css,
-                              struct cftype *cftype, u64 ls)
-{
-	return cpu_uclamp_ls_write_u64(css, cftype, ls);
-}
-u64 cpu_uclamp_ls_read_u64_wrapper(struct cgroup_subsys_state *css,
-                             struct cftype *cft)
-{
-	return cpu_uclamp_ls_read_u64(css, cft);
-}
-
-int cpu_uclamp_boost_write_u64_wrapper(struct cgroup_subsys_state *css,
-                              struct cftype *cftype, u64 boost)
-{
-	return cpu_uclamp_boost_write_u64(css, cftype, boost);
-}
-u64 cpu_uclamp_boost_read_u64_wrapper(struct cgroup_subsys_state *css,
-                             struct cftype *cft)
-{
-	return cpu_uclamp_boost_read_u64(css, cft);
-}
 #endif /* CONFIG_UCLAMP_TASK_GROUP */
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -10309,6 +10291,33 @@ static u64 cpu_rt_period_read_uint(struct cgroup_subsys_state *css,
 #endif /* CONFIG_RT_GROUP_SCHED */
 
 static struct cftype cpu_files[] = {
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+	{
+		.name = "uclamp.min",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_uclamp_min_show,
+		.write = cpu_uclamp_min_write,
+	},
+	{
+		.name = "uclamp.max",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_uclamp_max_show,
+		.write = cpu_uclamp_max_write,
+	},
+	{
+		.name = "uclamp.latency_sensitive",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_uclamp_ls_read_u64,
+		.write_u64 = cpu_uclamp_ls_write_u64,
+	},
+	{
+		.name = "uclamp.boosted",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_uclamp_boost_read_u64,
+		.write_u64 = cpu_uclamp_boost_write_u64,
+	},
+#endif
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	{
 		.name = "shares",

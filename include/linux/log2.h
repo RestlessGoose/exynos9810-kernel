@@ -207,4 +207,8 @@ int __order_base_2(unsigned long n)
 		ilog2((n) - 1) + 1) :		\
 	__order_base_2(n)			\
 )
+
+/* Number of bits needed to represent an unsigned value, including zero. */
+#define bits_per(n) ((n) == 0 ? 1 : ilog2(n) + 1)
+
 #endif /* _LINUX_LOG2_H */

@@ -1228,6 +1228,22 @@ config RT_GROUP_SCHED
 
 endif #CGROUP_SCHED
 
+config UCLAMP_TASK
+	bool "Enable utilization clamping for tasks"
+	depends on SMP && CPU_FREQ
+	default n
+	help
+	  Track effective task and runqueue utilization bounds for scheduler
+	  placement and frequency selection. Values use the 0..1024 scale.
+
+config UCLAMP_BUCKETS_COUNT
+	int "Utilization clamp buckets per runqueue"
+	depends on UCLAMP_TASK
+	range 5 20
+	default 5
+	help
+	  More buckets improve aggregation precision at a per-CPU memory cost.
+
 config UCLAMP_TASK_GROUP
 	bool "Utilization clamping per group of tasks"
 	depends on CGROUP_SCHED

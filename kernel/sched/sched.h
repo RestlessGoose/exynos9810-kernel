@@ -1642,6 +1642,11 @@ static const int rtprio_to_weight[51] = {
 struct sched_class {
 	const struct sched_class *next;
 
+#ifdef CONFIG_UCLAMP_TASK
+	/* Participate in runqueue utilization-clamp accounting. */
+	int uclamp_enabled;
+#endif
+
 	void (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);
 	void (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);
 	void (*yield_task) (struct rq *rq);
@@ -2462,36 +2467,25 @@ static inline bool uclamp_is_used(void)
 #endif /* CONFIG_UCLAMP_TASK */
 
 #ifdef CONFIG_UCLAMP_TASK_GROUP
+/* These hints belong to the CPU controller's scheduler task group. */
 static inline bool uclamp_latency_sensitive(struct task_struct *p)
 {
-	struct cgroup_subsys_state *css = task_css(p, cpuset_cgrp_id);
-	struct task_group *tg;
+	bool value;
 
-	if (!css)
-		return false;
-
-	if (!strlen(css->cgroup->kn->name))
-		return 0;
-
-	tg = container_of(css, struct task_group, css);
-
-	return tg->latency_sensitive;
+	rcu_read_lock();
+	value = READ_ONCE(task_group(p)->latency_sensitive);
+	rcu_read_unlock();
+	return value;
 }
 
 static inline bool uclamp_boosted(struct task_struct *p)
 {
-	struct cgroup_subsys_state *css = task_css(p, cpuset_cgrp_id);
-	struct task_group *tg;
+	bool value;
 
-	if (!css)
-		return false;
-
-	if (!strlen(css->cgroup->kn->name))
-		return 0;
-
-	tg = container_of(css, struct task_group, css);
-
-	return tg->boosted;
+	rcu_read_lock();
+	value = READ_ONCE(task_group(p)->boosted);
+	rcu_read_unlock();
+	return value;
 }
 #else
 static inline bool uclamp_latency_sensitive(struct task_struct *p)
