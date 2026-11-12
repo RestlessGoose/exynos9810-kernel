@@ -1,0 +1,197 @@
+CrownTrail ems-uclamp-test3 integration
+====================================
+
+Source inspection and whitespace checks were performed without invoking a
+build or accessing the phone. The maintainer subsequently compiled and booted
+the implementation on a Galaxy Note9 and verified the sysctl/CPU cgroup
+interfaces, active debugfs state, and rq_min=512 on a big CPU with a 50%
+top-app MIN and a controlled runnable workload. These initial device checks
+do not establish complete scheduler concurrency or frequency-response safety.
+CONFIG_SCHED_TUNE remains disabled.
+
+Confirmed defects in the supplied series
+---------------------------------------
+1. init/Kconfig defined only UCLAMP_TASK_GROUP. UCLAMP_TASK and
+   UCLAMP_BUCKETS_COUNT were undefined, so defconfig requests could not enable
+   them. This explains missing sysctls AND cgroup controls after normal Kconfig
+   processing. Existing sysctls in kernel/sysctl.c are already outside
+   CONFIG_SCHED_DEBUG; that guard was not the cause. A mismatching flashed
+   image/configuration remains possible and needs generated-config inspection.
+   Enabling UCLAMP_TASK also exposed missing bits_per(), enum uclamp_id and
+   sched_class.uclamp_enabled definitions; these dependencies are restored.
+2. init_uclamp() existed but was never called. Neither enqueue_task() nor
+   dequeue_task() called the rq aggregation helpers. All three call sites are
+   restored. Fork/post-fork, sched_setattr, class support, task-group allocation
+   and CPU-controller attachment hooks already existed.
+3. c47b929c1a2e and its wrappers registered scheduler callbacks against cpuset
+   CSS objects. css_tg() is container_of(css, task_group, css); a cpuset is NOT
+   a task_group. These callbacks could access/write unrelated memory if used.
+   The hint readers made the same invalid conversion. They now use the CPU
+   controller exclusively and the task's scheduler group under RCU.
+4. uclamp_update_active() updated INACTIVE clamps, leaving active clamps stale
+   and potentially inserting sleeping tasks into rq buckets. It now updates
+   only queued tasks in a clamp-enabled class under task_rq_lock(). A queued
+   task not yet accounted when the static key was first enabled is included;
+   dec_id() safely ignores its inactive old entry. RT-default updates likewise
+   refresh queued RT MIN accounting under the existing task/rq lock.
+5. New groups requested MIN=0 but copied the parent's effective MIN directly.
+   Under the root's 1024 permission ceiling this could become a spurious 100%
+   floor. Allocation now restricts the group's own request against the parent,
+   and online reconciles it under uclamp_mutex against racing parent writes.
+6. Pragmatic never consumed uclamp. The schedutil port did so before I/O-wait
+   boost, which could undo MAX. Both now clamp each CPU's final demand ratio
+   after I/O-wait normalization, before shared-policy maximum aggregation.
+   Schedutil's busy-frequency retention is bypassed when the runqueue MAX
+   is below this CPU's capacity, so it cannot retain an old request against
+   that limit. The heuristic is retained for unrestricted runqueues.
+
+History reviewed included the bucket/idle-retention/default/group hierarchy,
+ABI/fork/RT/static-key series through 48977164b7f8, cpuset relocation and its
+wrappers, and fair/schedutil hint changes. Names marked UPSTREAM/BACKPORT were
+not taken as evidence that their call-site dependencies were present.
+
+Interfaces and ownership
+------------------------
+The maintained interface is legacy CPU cgroups, matching Android CPU-controller
+UClampMin/UClampMax attributes. No cpuset aliases are provided. With CPU mounted
+at /dev/cpuctl, non-root child groups expose:
+  cpu.uclamp.min              percentage, e.g. 25 or 25.50
+  cpu.uclamp.max              percentage or max
+  cpu.uclamp.boosted          0/1, explicit EMS performance hint
+  cpu.uclamp.latency_sensitive 0/1, explicit EMS prefer-idle hint
+
+Root does not expose these files (existing CFTYPE_NOT_ON_ROOT semantics).
+Global administrator ceilings/defaults are at:
+  /proc/sys/kernel/sched_util_clamp_min
+  /proc/sys/kernel/sched_util_clamp_max
+  /proc/sys/kernel/sched_util_clamp_min_rt_default
+These use 0..1024 scheduler units. The first is a ceiling on MIN requests,
+not a global utilization floor. The inherited RT default is 1024: after
+activation, RT tasks can request full capacity, subject to group/system
+restrictions. This was preserved.
+
+Task sched_setattr/getattr clamps use 0..1024. CPU-group hierarchy/request
+restriction semantics of the backport are preserved: parent effective values
+cap child requests, and non-user-defined task requests use the group's value.
+This is the old backport's ceiling-style MIN hierarchy, not an assertion of
+identical modern 5.4 semantics: a nested child cannot raise MIN above a parent
+whose effective MIN is zero. Use an isolated direct child of the CPU root for
+the first test; inspect all ancestor settings before tuning nested groups.
+The two boolean hints are group-local, not numeric utilization multipliers.
+They do not automatically inherit from parent groups.
+
+No cgroup-v2 CPU implementation was added to this 4.9 CPU controller, which
+currently registers legacy_cftypes. /sys/fs/cgroup visibility depends on which
+controller is mounted there. cpuset controls and group callbacks are removed
+rather than attempting to equate separate cpuset and CPU hierarchies.
+
+Pragmatic and EMS behavior
+-------------------------
+EMS ml_boosted_cpu_util() returns USS-normalized combined utilization;
+Pragmatic's capacity denominator uses that same scheduler domain. P.A.R.T.
+and I/O-wait demands are included before the final clamp. If I/O-wait used
+frequency units, its ratio is converted to capacity units first. Clamps are
+applied once per CPU, then shared-policy demand takes the highest ratio.
+No conversion to a kHz floor is added. Existing energy-aware selection,
+profiles, rate limits, turbo credits, ACME/PM QoS, Power Envelope and thermal
+limits remain. Deadline's existing maximum-frequency bypass is preserved;
+DEADLINE is not a clamp-enabled class in this backport.
+
+Runqueue MAX is max-aggregated across runnable tasks. An unclamped co-runner
+can therefore allow a high frequency even if a test task has a low MAX.
+Other CPUs sharing the frequency policy, PM QoS/input floors, governor
+frequency headroom and hardware limits also prevent interpreting MAX as an
+absolute physical-frequency ceiling.
+
+With schedtune disabled, existing EMS prefer-idle/performance entry points now
+read the CPU group's latency_sensitive/boosted flags. This also reaches the
+existing service and ontime boosted-task preference paths. The minimum demand
+is included in energy/prefer-idle candidate fitting in USS units; real PELT,
+SSE/USS workload sums, energy busy-time and runnable history are not replaced
+with clamp values. MAX is consumed by DVFS, not used to erase measured load.
+This is targeted EMS integration, not a replacement with upstream EAS.
+
+Known remaining integration limits: schedtune-only util-est/ontime/band switches
+remain their existing disabled stubs; numeric MIN does not invent mappings for
+those switches. KPP's fixed schedtune group IDs and vendor /dev/stune hints do
+not automatically map to CPU cgroup names. Other higher-priority EMS policies
+(service/band/global placement) retain their existing precedence. The energy
+model is not rewritten to predict every clamp-constrained future OPP. These
+require measured policy work; no blind global clamping of all energy inputs.
+The pre-existing double RT addition in Pragmatic/schedutil is retained and
+must not be attributed to these cherry-picks without separate evidence.
+
+Synchronization and source limits
+--------------------------------
+Enqueue/dequeue execute under rq lock. sched_move_task() dequeues the old group
+before switching group state and reenqueues under the task/rq locks. Fork's
+active flags are cleared; task-group allocation and rq initialization establish
+valid neutral bounds. Group writes enable the static key before scheduler
+locks, serialize hierarchy propagation using the existing uclamp mutex/RCU,
+and refresh queued task references under pi/rq locks. Hint scalar accesses use
+READ_ONCE/WRITE_ONCE; old scheduler groups are protected by RCU while read.
+No new sleeping lock enters a scheduler utilization callback.
+
+This source audit cannot establish complete backport correctness. Lockdep,
+class transitions, first static-key activation, cgroup migration during writes,
+CPU hotplug, PI-boosted tasks, concurrent fork/exit and RT-default changes need
+runtime stress validation. Existing bitfield/effective-clamp lockless snapshot
+conventions were not replaced with a speculative accounting rewrite.
+
+Diagnostics and controlled validation
+-------------------------------------
+CONFIG_DEBUG_FS adds a root-readable /sys/kernel/debug/sched_uclamp snapshot:
+static-key active, 1024 scale, each possible CPU's cached MIN/MAX and capacity.
+It allocates only on read, retains no task/policy pointers and adds no counters
+or timestamps to hot paths. Reads can span concurrent updates. Hint readback
+and /proc/PID/cgroup identify group ownership. Existing EMS wakeup/service/
+prefer-idle tracepoints and CPU frequency events can correlate placement with
+frequency. No production debug config is enabled by this change.
+
+First inspect the ACTUAL generated build configuration (not embedded stock
+/proc/config.gz): UCLAMP_TASK=y, BUCKETS_COUNT=5, GROUP=y, CGROUP_SCHED=y,
+SMP=y, CPU_FREQ=y, SYSCTL=y. Do not infer the flashed image from defconfig.
+
+On the phone, root shell:
+  cat /proc/mounts | grep -E 'cpuctl|cpuset|cgroup'
+  ls /proc/sys/kernel/sched_util_clamp_*
+  mkdir /dev/cpuctl/uclamp-test
+  ls /dev/cpuctl/uclamp-test/cpu.uclamp.*
+  echo 50 > /dev/cpuctl/uclamp-test/cpu.uclamp.min
+  echo 80 > /dev/cpuctl/uclamp-test/cpu.uclamp.max
+  echo 1 > /dev/cpuctl/uclamp-test/cpu.uclamp.latency_sensitive
+  cat /dev/cpuctl/uclamp-test/cpu.uclamp.*
+  cat /sys/kernel/debug/sched_uclamp
+
+For a brief controlled CFS workload, avoid moving audio/RT/SystemUI initially:
+  yes >/dev/null &
+  P=$!
+  echo $P > /dev/cpuctl/uclamp-test/tasks
+  cat /proc/$P/cgroup
+  cat /sys/kernel/debug/sched_uclamp
+  cat /sys/devices/system/cpu/cpufreq/policy*/scaling_cur_freq
+  # Compare min=0 vs 50, and max=80 vs max under fixed workload/thermal state.
+  # Then clean up this isolated test group:
+  echo $P > /dev/cpuctl/tasks
+  kill $P
+  rmdir /dev/cpuctl/uclamp-test
+
+If util-linux uclampset is available, use its -p interface to read/set a single
+thread's sched_attr bounds; Android toybox chrt may not implement this ABI.
+A busy workload saturates naturally and is mainly useful for MAX/accounting;
+use a reproducible periodic workload to measure MIN-driven frequency response.
+Repeat migrations and clamp writes while watching kernel warnings. A clamp
+update need not synchronously issue a driver call: governor update callbacks
+and existing rate limits still apply. Hold the tested input-booster/profile
+state fixed during comparisons; independent PM QoS floors can mask MAX.
+
+Later DuhanROM work (no ROM files edited here): retain system UClampMin/Max
+attributes mapped to controller cpu and files cpu.uclamp.min/max. Ensure task
+profiles actually JoinCgroup cpu foreground/top-app/background as intended;
+cpuset placement alone does not move scheduler CPU-group ownership. Replace
+vendor schedtune hint actions with explicit CPU-group uclamp/hint actions only
+after measuring appropriate values. Schedtune boost percentages are not
+numerically equivalent to utilization floors. Adjust file permissions through
+the ROM's normal cgroup/task-profile and SELinux policy definitions if needed;
+do not relax kernel permissions globally. Do not mount a second conflicting
+controller hierarchy or restore schedtune silently.
